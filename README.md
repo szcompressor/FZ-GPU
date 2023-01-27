@@ -11,17 +11,17 @@ This software is implemented and optimized based on the [cuSZ framework](https:/
 Please use compile.sh to compile FZ-GPU and you will get the executable ```fz-gpu```.
 
 ## Download Data
-Please download the datasets from [SDRBench](http://sdrbench.github.io/).
+Please use ```get_sample_data.sh``` to download the sample data or more datasets from [SDRBench](http://sdrbench.github.io/).
 
 ## Test
-Please use the below command to test ```fz-gpu``` on float32 input data. 
+Please use the below command to test ```fz-gpu``` on the example float32 data.
 ```
 ./fz-gpu [input data path] [dimension z] [dimension y] [dimension x] [error bound]
 ```
 
 For example,
 ```
-./fz-gpu /data/HACC/xx.f32 280953867 1 1 1e-3
-./fz-gpu /data/CESM/TSMX_1_1800_3600.f32 3600 1800 1 1e-3
-./fz-gpu /data/Hurricane/Wf48.bin.f32 500 500 100 1e-3
+./fz-gpu data.cesm-CLDHGH-3600x1800 3600 1800 1 1e-3
+./fz-gpu exafel-59200x388 39200 388 1 1e-3
+./fz-gpu hurr-CLOUDf48-500x500x100 500 500 100 1e-3
 ```
