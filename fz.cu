@@ -331,31 +331,13 @@ void runSzs(std::string fileName, int x, int y, int z, double eb)
 int main(int argc, char* argv[])
 {
     using T = float;
-    std::string dir_name;
-    dir_name  = std::string(argv[1]);
+    std::string fileName;
+    fileName  = std::string(argv[1]);
     int    x  = std::stoi(argv[2]);
     int    y  = std::stoi(argv[3]);
     int    z  = std::stoi(argv[4]);
     double eb = std::stod(argv[5]);
 
-    // iterate the dir to get file with .dat and .f32 to compress
-    struct dirent* entry      = nullptr;
-    DIR*           dp         = nullptr;
-    std::string    extension1 = ".dat";
-    std::string    extension2 = ".f32";
-    std::string    fname;
-
-    dp = opendir(dir_name.c_str());
-    if (dp != nullptr) {
-        while ((entry = readdir(dp))) {
-            fname = entry->d_name;
-            if (fname.find(extension1, (fname.length() - extension1.length())) != std::string::npos ||
-                fname.find(extension2, (fname.length() - extension2.length())) != std::string::npos) {
-                printf("%s\n", entry->d_name);
-                runSzs(dir_name + "/" + fname, x, y, z, eb);
-            }
-        }
-    }
-    closedir(dp);
+    runSzs(fileName, x, y, z, eb);
     return 0;
 }
