@@ -1,0 +1,17 @@
+﻿---
+BasedOnStyle: Chromium
+BreakBeforeBraces: Stroustrup
+IndentWidth: 4
+ColumnLimit: 120
+BreakConstructorInitializers: AfterColon
+AllowShortBlocksOnASingleLine: Always
+AllowShortFunctionsOnASingleLine: All
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortLambdasOnASingleLine: All
+AllowShortLoopsOnASingleLine: true
+AllowShortIfStatementsOnASingleLine: true
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true
+AlignEscapedNewlines: Left
+AlignAfterOpenBracket: AlwaysBreak

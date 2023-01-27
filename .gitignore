@@ -1,0 +1,64 @@
+# intermediate data
+bin/cusz
+
+*.sz
+*.szx
+*.cusza
+*.cuszx
+*.out
+
+# general
+*.dylib
+*.so
+*.tsv
+*.o
+*.swp
+.DS_Store
+.cache
+.idea
+.vs
+.vscode
+tags
+.ipynb_checkpoints
+__pycache__
+.clangd
+compile_commands.json
+Makefile
+cmake-build-debug
+cmake-build-release
+build
+
+# profiling and analysis
+*.ncu-rep
+*.qdrep
+*.sqlite
+*.qdstrm
+# *.ipynb
+
+# build
+Release/
+Debug/
+RelWithDebInfo/
+
+# intermediate and binary
+dummy_cxlorenzo
+dummy_xlorenzo2d
+dummy_xlorenzo3d
+
+CLDLOW.dat
+
+# folder
+demo_dpcpp/
+test/experimental/
+src/pySZ/
+src/ood
+src/future
+src/huffre
+data/4lossless
+
+data/cesm-CLDHGH-3600x1800
+data/cesm-CLDHGH-3600x1800.tgz
+data/exafel-59200x388
+data/exafel-59200x388.tgz
+data/hurr-CLOUDf48-500x500x100
+data/hurr-CLOUDf48-500x500x100.tgz
