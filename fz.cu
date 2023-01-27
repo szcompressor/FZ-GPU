@@ -9,21 +9,12 @@
 #include <iostream>
 #include <algorithm>
 
-// #include "include/kernel/cpplaunch_cuda.hh"
 #include "include/kernel/lorenzo_var.cuh"
 #include "include/utils/cuda_err.cuh"
 #include "include/utils/io.hh"
 
 #define UINT32_BIT_LEN 32
 
-// struct is_true
-// {
-//   __host__ __device__
-//   bool operator()(const unsigned char x)
-//   {
-//     return x == 1;
-//   }
-// };
 
 long GetFileSize(std::string filename)
 {
@@ -55,31 +46,12 @@ void write_array_to_binary(const std::string& fname, T* const _a, size_t const d
     ofs.close();
 }
 
-// __global__ void generateBitFlagArray(int blockSize, uint8_t* d_in, uint32_t* d_bitFlagArray, uint8_t*
-// d_byteFlagArray) {
-//     // __shared__ unsigned char[thread.dim * blockSize] originalData;
-//     int tid = threadIdx.x + blockIdx.x * blockDim.x;
-//     uint8_t sum = 0;
-
-//     for(int i = 0; i < blockSize; i++) {
-//         sum |= d_in[tid * blockSize + i];
-//         // originalData[thread.x * blockSize + i] = d_in[tid * blockSize + i];
-//     }
-//     for(int i = 0; i < blockSize; i++) {
-//         d_byteFlagArray[tid * blockSize + i] = (sum!=0);
-//         // originalData[thread.x * blockSize + i] = d_in[tid * blockSize + i];
-//     }
-//     d_bitFlagArray[blockIdx.x] = __ballot_sync(0xFFFFFFFFU, sum != 0);
-// }
-
 // processing 16 bytes * 32 threads = 512 bytes -> 4 * 128 bytes
 __global__ void
 generateBitFlagArrayDebug(int blockSize, uint8_t* _d_in, uint32_t* d_bitFlagArray, uint8_t* d_byteFlagArray)
 {
-    // __shared__ unsigned char[thread.dim * blockSize] originalData;
     __shared__ struct {
         uint32_t databuffer[128];
-        // uint32_t bigflatarray[];
     } shm;
 
     static const int WARPSIZE = 32;
@@ -99,11 +71,6 @@ generateBitFlagArrayDebug(int blockSize, uint8_t* _d_in, uint32_t* d_bitFlagArra
     for (auto i = 0; i < 4; i++) { sum |= shm.databuffer[i + threadIdx.x * 4]; }
 
     int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    // uint8_t sum = 0;
-
-    // for(int i = 0; i < blockSize; i++) {
-    //     sum |= d_in[tid * blockSize + i];
-    // }
     d_byteFlagArray[tid] = (sum != 0);
     auto ballot_res      = __ballot_sync(0xFFFFFFFFU, sum != 0);
     if (threadIdx.x == 0) d_bitFlagArray[blockIdx.x] = ballot_res;
@@ -120,26 +87,6 @@ __global__ void encodeDebug(int blockSize, uint8_t* d_in, uint8_t* d_out, uint32
         for (int i = 0; i < blockSize; i++) { d_out[sumArr[threadIdx.x] * blockSize + i] = d_in[tid * blockSize + i]; }
     }
 }
-
-// __global__ void bitShuffle(uint16_t* in){
-//     // __shared__ unsigned char s_in[32];
-//     // __shared__ uint32_t bitFlagArray[16];
-//     extern __shared__ uint32_t s[];
-//     uint32_t *bitFlagArray = s;
-//     uint16_t *bitFlagArrayUint16 = (uint16_t*)s;
-
-//     // s_in[threadIdx.x] = in[threadIdx.x + blockIdx.x * 32];
-//     // __syncthreads();
-
-//     uint16_t buffer = in[threadIdx.x + blockIdx.x * blockDim.x];
-//     #pragma unroll 16
-//     for( int i = 0; i < 16; i++ ) {
-//         bitFlagArray[i] = __ballot_sync(0xFFFFFFFFU,  buffer & (1U<<i) );
-//     }
-//     // __syncthreads();
-//     in[threadIdx.x + blockIdx.x * blockDim.x] = bitFlagArrayUint16[threadIdx.x];
-//     // out[threadIdx.x + blockIdx.x * 32] = (bitFlagArray[int(threadIdx.x / 4)] >> (8 * threadIdx.x % 4)) & 0xff;
-// }
 
 __global__ void bitshuffleDebug(const uint32_t* __restrict__ in, uint32_t* __restrict__ out)
 {
@@ -281,22 +228,17 @@ void runSzs(std::string fileName, int x, int y, int z, double eb)
     uint16_t* quant;
     float     time_elapsed;
 
-    // float preTime = 0;
-    // float shuffleTime = 0;
-    // float encodeTime = 0;
 
     h_data = read_binary_to_new_array<float>(fileName, len);
     float range = *std::max_element(h_data , h_data + len) - *std::min_element(h_data , h_data + len);
     CHECK_CUDA(cudaMalloc((void**)&data, sizeof(float) * len));
     CHECK_CUDA(cudaMemcpy(data, h_data, sizeof(float) * len, cudaMemcpyHostToDevice));
-    // CHECK_CUDA(cudaMemset(data, 0, sizeof(float) * len));
     CHECK_CUDA(cudaMalloc((void**)&quant, sizeof(uint16_t) * len));
     CHECK_CUDA(cudaMemset(quant, 0, sizeof(uint16_t) * len));
     CHECK_CUDA(cudaMalloc((void**)&signum, sizeof(bool) * len));
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
-    // thrust::cuda::par.on(stream);
 
     // absolute error bound
     cusz::experimental::launch_construct_LorenzoI_var<float, uint16_t, float>(
@@ -314,10 +256,6 @@ void runSzs(std::string fileName, int x, int y, int z, double eb)
     newLen            = newLen % 8192 == 0 ? newLen : newLen - newLen % 8192 + 8192;
     int dataChunkSize = newLen % (blockSize * UINT32_BIT_LEN) == 0 ? newLen / (blockSize * UINT32_BIT_LEN)
                                                                    : int(newLen / (blockSize * UINT32_BIT_LEN)) + 1;
-
-    // uint8_t* quantUint8 = (uint8_t*) quant;
-    // newLen = len * 2;
-    // CHECK_CUDA(cudaMemset(quantUint8 + newLen, 0, dataChunkSize * blockSize * UINT32_BIT_LEN - newLen));
     uint32_t* d_bitFlagArray;
     uint32_t*  d_byteFlagArray;
 
@@ -329,7 +267,6 @@ void runSzs(std::string fileName, int x, int y, int z, double eb)
 
     CHECK_CUDA(cudaMalloc((void**)&d_out, sizeof(uint8_t) * dataChunkSize * blockSize * UINT32_BIT_LEN));
     CHECK_CUDA(cudaMemset(d_out, 0, sizeof(uint8_t) * dataChunkSize * blockSize * UINT32_BIT_LEN));
-    // floor(sizeof(uint16_t) * len / 32 / 16)
 
     dim3 threads(32, 32);
     dim3 grid(floor(newLen / 8192), 2, 1);  // divided by 2 is because the file is transformed from uint32 to uint16
@@ -340,32 +277,17 @@ void runSzs(std::string fileName, int x, int y, int z, double eb)
     newLen        = len * 2;  // bitshuffle result length in byte unit
     dataChunkSize = newLen % (blockSize * UINT32_BIT_LEN) == 0 ? newLen / (blockSize * UINT32_BIT_LEN)
                                                                : int(newLen / (blockSize * UINT32_BIT_LEN)) + 1;
-    // uint8_t* tmp = (uint8_t*)malloc(sizeof(uint8_t) * dataChunkSize * UINT32_BIT_LEN);
-    // CHECK_CUDA(cudaMemcpy(tmp, d_byteFlagArray,
-    //                            sizeof(uint8_t) * dataChunkSize * UINT32_BIT_LEN, cudaMemcpyDeviceToHost));
-    // // for(int i = 809885; i < 810016; i ++) {
-    // //     printf("index %d: %d\n", i, tmp[i]);
-    // // }
-    // write_array_to_binary<uint8_t>("test.szs", tmp, dataChunkSize * UINT32_BIT_LEN);
-    // free(tmp);
     uint32_t* d_preSumArray;
     CHECK_CUDA(
         cudaMalloc((void**)&d_preSumArray, sizeof(uint32_t) * dataChunkSize * UINT32_BIT_LEN + sizeof(uint32_t)));
     CHECK_CUDA(cudaMemset(d_preSumArray, 0, sizeof(uint32_t) * dataChunkSize * UINT32_BIT_LEN + sizeof(uint32_t)));
     uint32_t* d_byteFlagArrayTest;
     CHECK_CUDA(cudaMalloc((void**)&d_byteFlagArrayTest, sizeof(uint32_t) * dataChunkSize * UINT32_BIT_LEN));
-    // CHECK_CUDA(cudaMemset(d_byteFlagArrayTest, 0, sizeof(uint32_t) * dataChunkSize * UINT32_BIT_LEN));
-    // dataCast<<<dataChunkSize, 32>>>(d_byteFlagArray, d_byteFlagArrayTest);
     CHECK_CUDA(cudaMemcpy(
         d_byteFlagArrayTest, d_byteFlagArray, sizeof(uint32_t) * dataChunkSize * UINT32_BIT_LEN,
         cudaMemcpyDeviceToDevice));
-    // uint8_t* baseByteArr = read_binary_to_new_array<uint8_t>("base.szs", dataChunkSize * UINT32_BIT_LEN);
-    // CHECK_CUDA(cudaMemcpy(d_byteFlagArrayTest, baseByteArr, dataChunkSize * UINT32_BIT_LEN,
-    // cudaMemcpyHostToDevice)); delete [] baseByteArr;
     CHECK_CUDA(cudaFree(d_byteFlagArray));
 
-    // generateBitFlagArrayDebug<<<dataChunkSize, 32>>>(blockSize, (uint8_t*)bitshuffleOut, d_bitFlagArray,
-    // d_byteFlagArray); Determine temporary device storage requirements
     void*  d_temp_storage     = NULL;
     size_t temp_storage_bytes = 0;
     cub::DeviceScan::ExclusiveSum(
@@ -375,13 +297,7 @@ void runSzs(std::string fileName, int x, int y, int z, double eb)
     // Run exclusive prefix sum
     cub::DeviceScan::ExclusiveSum(
         d_temp_storage, temp_storage_bytes, d_byteFlagArrayTest, d_preSumArray, dataChunkSize * UINT32_BIT_LEN);
-    // d_out s<-- [0, 8, 14, 21, 26, 29, 29]
-    // uint32_t* h_tmp = (uint32_t*)malloc(sizeof(uint32_t) * 100);
-    // CHECK_CUDA(cudaMemcpy(h_tmp, d_preSumArray + dataChunkSize * UINT32_BIT_LEN - 100, sizeof(uint32_t) * 100, cudaMemcpyDeviceToHost));
-    // for(int i = 0; i < 100; i++) {
-    //     printf("index %d: %d\n", i, h_tmp[i]);
-    // }
-    // free(h_tmp);
+    
     uint32_t* lastSum = (uint32_t*)malloc(sizeof(uint32_t));
     CHECK_CUDA(
         cudaMemcpy(lastSum, d_preSumArray + dataChunkSize * UINT32_BIT_LEN - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost));
@@ -394,20 +310,8 @@ void runSzs(std::string fileName, int x, int y, int z, double eb)
         cudaMemcpy(d_preSumArray + dataChunkSize * UINT32_BIT_LEN, result, sizeof(uint32_t), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaFree(d_byteFlagArrayTest));
     CHECK_CUDA(cudaFree(d_temp_storage));
-    // dataChunkSize = (newLen - (newLen % 8192)) / (blockSize * UINT32_BIT_LEN);
     encodeDebug<<<dataChunkSize, 32>>>(
-        blockSize, (uint8_t*)bitshuffleOut, d_out, d_preSumArray);  // floor(sizeof(uint16_t) * len / 32)
-
-    // // print debug info
-    // uint32_t *h_result = (uint32_t*)malloc(sizeof(uint32_t) * dataChunkSize * UINT32_BIT_LEN + 1);
-    // CHECK_CUDA(cudaMemcpy(h_result, d_preSumArray, sizeof(uint32_t) * dataChunkSize * UINT32_BIT_LEN + 1,
-    // cudaMemcpyDeviceToHost)); for(int i = 0; i < 100; i++) {
-    //     printf("index %d: %d\n", i, h_result[i]);
-    // }
-    // free(h_result);
-    // uint32_t* result = (uint32_t*)malloc(sizeof(uint32_t));
-    // CHECK_CUDA(
-    //     cudaMemcpy(result, d_preSumArray + dataChunkSize * UINT32_BIT_LEN, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+        blockSize, (uint8_t*)bitshuffleOut, d_out, d_preSumArray);  
     printf("original size: %d\n", fileSize);
     printf("compressed size: %d\n", sizeof(uint32_t) * dataChunkSize + blockSize * (*result));
     printf(
@@ -427,76 +331,13 @@ void runSzs(std::string fileName, int x, int y, int z, double eb)
 int main(int argc, char* argv[])
 {
     using T = float;
-    std::string dir_name;
-    dir_name  = std::string(argv[1]);
+    std::string fileName;
+    fileName  = std::string(argv[1]);
     int    x  = std::stoi(argv[2]);
     int    y  = std::stoi(argv[3]);
     int    z  = std::stoi(argv[4]);
     double eb = std::stod(argv[5]);
 
-    // iterate the dir to get file with .dat and .f32 to compress
-    struct dirent* entry      = nullptr;
-    DIR*           dp         = nullptr;
-    std::string    extension1 = ".dat";
-    std::string    extension2 = ".f32";
-    std::string    fname;
-
-    dp = opendir(dir_name.c_str());
-    if (dp != nullptr) {
-        while ((entry = readdir(dp))) {
-            fname = entry->d_name;
-            if (fname.find(extension1, (fname.length() - extension1.length())) != std::string::npos ||
-                fname.find(extension2, (fname.length() - extension2.length())) != std::string::npos) {
-                printf("%s\n", entry->d_name);
-                // std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-                runSzs(dir_name + "/" + fname, x, y, z, eb);
-                // std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-
-                // std::cout << "Time difference = " << std::chrono::duration_cast<std::chrono::microseconds>(end -
-                // begin).count() << "[µs]" << std::endl; std::cout << "Time difference = " <<
-                // std::chrono::duration_cast<std::chrono::nanoseconds> (end - begin).count() << "[ns]" << std::endl;
-            }
-        }
-    }
-    closedir(dp);
+    runSzs(fileName, x, y, z, eb);
     return 0;
 }
-
-// int main(int argc, char *argv[])
-// {
-//   using T = float;
-//   std::string dir_name;
-//   dir_name = std::string(argv[1]);
-//   int x = std::stoi(argv[2]);
-//   int y = std::stoi(argv[3]);
-//   int z = std::stoi(argv[4]);
-//   double eb = std::stod(argv[5]);
-//   runSzs(dir_name, x, y, z, eb);
-// //   // iterate the dir to get file with .dat and .f32 to compress
-// //   struct dirent *entry = nullptr;
-// //   DIR *dp = nullptr;
-// //   std::string extension1 = ".dat";
-// //   std::string extension2 = ".f32";
-// //   std::string fname;
-
-// //   dp = opendir(dir_name.c_str());
-// //   if (dp != nullptr) {
-// //     while ((entry = readdir(dp))){
-// //       fname = entry->d_name;
-// //       if(fname.find(extension1, (fname.length() - extension1.length())) != std::string::npos ||
-// //           fname.find(extension2, (fname.length() - extension2.length())) != std::string::npos){
-// //         printf ("%s\n", entry->d_name);
-// //         // std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-// //         runSzs(dir_name + "/" + fname, x, y, z, eb);
-// //         // std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-
-// //         // std::cout << "Time difference = " << std::chrono::duration_cast<std::chrono::microseconds>(end -
-// begin).count() << "[µs]" << std::endl;
-// //         // std::cout << "Time difference = " << std::chrono::duration_cast<std::chrono::nanoseconds> (end -
-// begin).count() << "[ns]" << std::endl;
-// //       }
-// //     }
-// //   }
-// //   closedir(dp);
-//   return 0;
-// }
