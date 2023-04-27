@@ -68,6 +68,7 @@ Computing Applications on GPUs},
    location = {Orlando, FL, USA},
      series = {HPDC '23}
 }
+```
 
 ## Acknowledgements
 This R&D is supported by the Exascale Computing Project (ECP), Project Number: 17-SC-20-SC, a collaborative effort of two DOE organizations – the Office of Science and the National Nuclear Security Administration, responsible for the planning and preparation of a capable exascale ecosystem. This repository is based upon work supported by the U.S. Department of Energy, Office of Science, under contract DE-AC02-06CH11357, and also supported by the National Science Foundation under Grants OAC-2003709/2303064, OAC-2104023/2247080, and OAC-2312673.
