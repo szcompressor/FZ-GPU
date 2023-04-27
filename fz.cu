@@ -355,6 +355,9 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
 
     bool*     deviceSignNum;
 
+    std::chrono::time_point<std::chrono::system_clock> compressionStart, compressionEnd;
+    std::chrono::time_point<std::chrono::system_clock> decompressionStart, decompressionEnd;
+
     int  blockSize = 16;
     auto quantizationCodeByteLen = dataTypeLen * 2;  // quantization code length in unit of bytes
     quantizationCodeByteLen = quantizationCodeByteLen % 4096 == 0 ? quantizationCodeByteLen : quantizationCodeByteLen - quantizationCodeByteLen % 4096 + 4096;
@@ -394,17 +397,27 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
     cudaStream_t stream;
     cudaStreamCreate(&stream);
 
+    compressionStart = std::chrono::system_clock::now();
+
     // pre-quantization
     cusz::experimental::launch_construct_LorenzoI_var<float, uint16_t, float>(deviceInput, deviceQuantizationCode, deviceSignNum, inputDimension, eb * range, timeElapsed, stream);
 
     // bitshuffle kernel
     compressionFusedKernel<<<grid, block>>>((uint32_t*)deviceQuantizationCode, (uint32_t*)deviceCompressedOutput, deviceOffsetCounter, deviceBitFlagArr, deviceStartPosition, deviceCompressedSize);
 
+    cudaDeviceSynchronize();
+    compressionEnd = std::chrono::system_clock::now();
+
+    decompressionStart = std::chrono::system_clock::now();
+
     // de-bitshuffle kernel
     decompressionFusedKernel<<<grid, block>>>((uint32_t*)deviceCompressedOutput, (uint32_t*)deviceDecompressedQuantizationCode, deviceBitFlagArr, deviceStartPosition);
 
     // de-pre-quantization
     cusz::experimental::launch_reconstruct_LorenzoI_var<float, uint16_t, float>(deviceSignNum, deviceDecompressedQuantizationCode, deviceDecompressedOutput, inputDimension, eb * range, timeElapsed,  stream);
+
+    cudaDeviceSynchronize();
+    decompressionEnd = std::chrono::system_clock::now();
 
 #ifdef VERIFICATION
 
@@ -484,6 +497,15 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
     printf("original size: %d\n", inputSize);
     printf("compressed size: %ld\n", sizeof(uint32_t) * dataChunkSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * int(quantizationCodeByteLen / 4096));
     printf("compression ratio: %f\n", float(inputSize) / float(sizeof(uint32_t) * dataChunkSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
+
+    std::chrono::duration<double> compressionTime = compressionEnd - compressionStart;
+    std::chrono::duration<double> decompressionTime = decompressionEnd - decompressionStart;
+    
+    std::cout << "compression time: " << compressionTime.count() << " s\n";
+    std::cout << "compression end to end throughput: " << float(inputSize) / 1024 / 1024 /1024 / compressionTime.count() << " GB/s\n";
+
+    std::cout << "decompression time: " << decompressionTime.count() << " s\n";
+    std::cout << "decompression end to end throughput: " << float(inputSize) / 1024 / 1024 /1024 / decompressionTime.count() << " GB/s\n";
 
     CHECK_CUDA(cudaFree(deviceQuantizationCode));
     CHECK_CUDA(cudaFree(deviceInput));
