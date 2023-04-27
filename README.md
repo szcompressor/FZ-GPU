@@ -7,10 +7,10 @@ This software is implemented and optimized based on the [cuSZ](https://github.co
 - Developers: Boyuan Zhang, Jiannan Tian
 - Contributors (alphabetic): Dingwen Tao, Franck Cappello, Sheng Di, Xiaodong Yu
 
-## Environment
-- NVIDIA GPUs
-- GCC (9.3.0)
-- CUDA (11.4.120)
+## Recommended Environment
+- Linux OS with NVIDIA GPUs
+- GCC (>= 7.3.0)
+- CUDA (>= 11.0)
 
 ## Compile
 Please use the following command to compile FZ-GPU. You will get the executable ```fz-gpu```.
