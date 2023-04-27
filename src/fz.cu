@@ -9,8 +9,8 @@
 #include <iostream>
 #include <algorithm>
 
-#include "include/kernel/lorenzo_var.cuh"
-#include "include/utils/cuda_err.cuh"
+#include "../include/kernel/lorenzo_var.cuh"
+#include "../include/utils/cuda_err.cuh"
 
 #define UINT32_BIT_LEN 32
 // #define VERIFICATION
