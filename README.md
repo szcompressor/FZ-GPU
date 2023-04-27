@@ -2,6 +2,11 @@
 
 This software is implemented and optimized based on the [cuSZ framework](https://github.com/szcompressor/cuSZ). Specifically, we modified cuSZ’s dual-quantization kernel in kernel/lorenzo_var.cuh and implement our bitshuffle and new lossless encode kernels in fz.cu. FZ-GPU performs compression and decompression together (we will provide options to do compression and decompression separately in the future).
 
+(C) 2023 by Indiana University and Argonne National Laboratory.
+
+- Developers: Boyuan Zhang, Jiannan Tian
+- Contributors (alphabetic): Dingwen Tao, Franck Cappello, Sheng Di, Xiaodong Yu
+
 ## Environment
 - NVIDIA GPUs
 - GCC (9.3.0)
