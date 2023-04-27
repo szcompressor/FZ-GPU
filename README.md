@@ -44,7 +44,7 @@ compression ratio: 21.113260
 compression time: 0.000985528 s
 compression e2e throughput: 179.082 GB/s
 decompression time: 0.00114546 s
-decompression e2d throughput: 154.079 GB/s
+decompression e2e throughput: 154.079 GB/s
 ```
 
 To obtain more accurate timing for the compression kernel, please use ```nsys``` before the execution command, like
