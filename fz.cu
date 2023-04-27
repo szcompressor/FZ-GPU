@@ -11,320 +11,496 @@
 
 #include "include/kernel/lorenzo_var.cuh"
 #include "include/utils/cuda_err.cuh"
-#include "include/utils/io.hh"
 
 #define UINT32_BIT_LEN 32
+// #define VERIFICATION
+// #define DEBUG
 
 
-long GetFileSize(std::string filename)
+long GetFileSize(std::string fidataTypeLename)
 {
     struct stat stat_buf;
-    int         rc = stat(filename.c_str(), &stat_buf);
+    int         rc = stat(fidataTypeLename.c_str(), &stat_buf);
     return rc == 0 ? stat_buf.st_size : -1;
 }
 
 template <typename T>
-T* read_binary_to_new_array(const std::string& fname, size_t dtype_len)
+T* read_binary_to_new_array(const std::string& fname, size_t dtype_dataTypeLen)
 {
     std::ifstream ifs(fname.c_str(), std::ios::binary | std::ios::in);
     if (not ifs.is_open()) {
         std::cerr << "fail to open " << fname << std::endl;
         exit(1);
     }
-    auto _a = new T[dtype_len]();
-    ifs.read(reinterpret_cast<char*>(_a), std::streamsize(dtype_len * sizeof(T)));
+    auto _a = new T[dtype_dataTypeLen]();
+    ifs.read(reinterpret_cast<char*>(_a), std::streamsize(dtype_dataTypeLen * sizeof(T)));
     ifs.close();
     return _a;
 }
 
 template <typename T>
-void write_array_to_binary(const std::string& fname, T* const _a, size_t const dtype_len)
+void write_array_to_binary(const std::string& fname, T* const _a, size_t const dtype_dataTypeLen)
 {
     std::ofstream ofs(fname.c_str(), std::ios::binary | std::ios::out);
     if (not ofs.is_open()) return;
-    ofs.write(reinterpret_cast<const char*>(_a), std::streamsize(dtype_len * sizeof(T)));
+    ofs.write(reinterpret_cast<const char*>(_a), std::streamsize(dtype_dataTypeLen * sizeof(T)));
     ofs.close();
 }
 
-// processing 16 bytes * 32 threads = 512 bytes -> 4 * 128 bytes
-__global__ void
-generateBitFlagArrayDebug(int blockSize, uint8_t* _d_in, uint32_t* d_bitFlagArray, uint8_t* d_byteFlagArray)
-{
-    __shared__ struct {
-        uint32_t databuffer[128];
-    } shm;
-
-    static const int WARPSIZE = 32;
-    // at the same time, WARPSIZE = blockDim.x
-
-    auto d_in = reinterpret_cast<uint32_t*>(_d_in);
-
-    const auto gidx_base = 128 * blockIdx.x;
-
-    for (auto i = 0; i < 4; i++) {
-        auto local_idx            = threadIdx.x + WARPSIZE * i;
-        shm.databuffer[local_idx] = d_in[gidx_base + local_idx];
-    }
-    __syncthreads();
-
-    uint32_t sum = 0;
-    for (auto i = 0; i < 4; i++) { sum |= shm.databuffer[i + threadIdx.x * 4]; }
-
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    d_byteFlagArray[tid] = (sum != 0);
-    auto ballot_res      = __ballot_sync(0xFFFFFFFFU, sum != 0);
-    if (threadIdx.x == 0) d_bitFlagArray[blockIdx.x] = ballot_res;
-}
-
-__global__ void encodeDebug(int blockSize, uint8_t* d_in, uint8_t* d_out, uint32_t* preSum)
-{
-    __shared__ uint32_t sumArr[33];
-    int                 tid = threadIdx.x + blockIdx.x * blockDim.x;
-    sumArr[0]               = preSum[tid];
-    sumArr[threadIdx.x + 1] = preSum[tid + 1];
-    __syncthreads();
-    if (sumArr[threadIdx.x + 1] != sumArr[threadIdx.x]) {
-        for (int i = 0; i < blockSize; i++) { d_out[sumArr[threadIdx.x] * blockSize + i] = d_in[tid * blockSize + i]; }
-    }
-}
-
-__global__ void bitshuffleDebug(const uint32_t* __restrict__ in, uint32_t* __restrict__ out)
-{
-    /*
-    grid 32x32 threads
-    each thread loads 4 bytes (aligned) = 128 bytes per row of 32
-    total bytes loaded = 32x32x4 = 4096 bytes
-                  x                y  z
-    blocks = ( total_bytes / 8192, 2, 1 )
-    */
-    __shared__ uint32_t smem[32][33];
-    uint32_t            v;
-    /* This thread is going to load 4 bytes. Next thread in x will load
-    the next 4 to be aligned. In total we pick up 32*4 = 128 bytes in this
-    row of 32 (warp) for bit0.
-    The next row (warp) is going to pick up bit1, etc
-    The first grid starts at byte 0 + blockIdx.x * 2048
-    The second grid starts at byte 8192/32/2
-     */
-    smem[threadIdx.y][threadIdx.x] =
-        in[threadIdx.x +        // Aligned loads. 32*4 = 128 bytes
-           threadIdx.y * 32 +   // Offset to next bit = 8192/32/4.
-           blockIdx.x * 2048 +  // Start of the block
-           blockIdx.y * 1024];  // Next 32 reads
-    __syncthreads();            /* Now we loaded 4 kB to smem.   Do the first level of transpose */
-    v = smem[threadIdx.y][threadIdx.x];
-#pragma unroll 32
-    for (int i = 0; i < 32; i++) smem[threadIdx.y][i] = __ballot_sync(0xFFFFFFFFU, v & (1U << i));
-    __syncthreads(); /* Now we loaded 4 kB to smem.   Do the first level of transpose */
-    out[threadIdx.x + threadIdx.y * 32 + blockIdx.y * 1024 + blockIdx.x * 2048] = smem[threadIdx.x][threadIdx.y];
-}
-
-__global__ void bitshuffleAndBitflag(
+__global__ void compressionFusedKernel(
     const uint32_t* __restrict__ in,
     uint32_t* __restrict__ out,
-    int       blockSize,
-    uint32_t* d_bitFlagArray,
-    uint32_t*  d_byteFlagArray)
+    uint32_t* deviceOffsetCounter,
+    uint32_t* deviceBitFlagArr,
+    uint32_t* deviceStartPosition,
+    uint32_t* deviceCompressedSize)
 {
-    /*
-    grid 32x32 threads
-    each thread loads 4 bytes (aligned) = 128 bytes per row of 32
-    total bytes loaded = 32x32x4 = 4096 bytes
-                  x                y  z
-    blocks = ( total_bytes / 8192, 2, 1 )
-    */
-    __shared__ uint32_t smem[32][33];
-    uint32_t            v;
-    /* This thread is going to load 4 bytes. Next thread in x will load
-    the next 4 to be aligned. In total we pick up 32*4 = 128 bytes in this
-    row of 32 (warp) for bit0.
-    The next row (warp) is going to pick up bit1, etc
-    The first grid starts at byte 0 + blockIdx.x * 2048
-    The second grid starts at byte 8192/32/2
-     */
-    smem[threadIdx.y][threadIdx.x] =
-        in[threadIdx.x +        // Aligned loads. 32*4 = 128 bytes
-           threadIdx.y * 32 +   // Offset to next bit = 8192/32/4.
-           blockIdx.x * 2048 +  // Start of the block
-           blockIdx.y * 1024];  // Next 32 reads
-    __syncthreads();            /* Now we loaded 4 kB to smem.   Do the first level of transpose */
-    v = smem[threadIdx.y][threadIdx.x];
-#pragma unroll 32
-    for (int i = 0; i < 32; i++) smem[threadIdx.y][i] = __ballot_sync(0xFFFFFFFFU, v & (1U << i));
-    __syncthreads(); /* Now we loaded 4 kB to smem.   Do the first level of transpose */
-    out[threadIdx.x + threadIdx.y * 32 + blockIdx.y * 1024 + blockIdx.x * 2048] = smem[threadIdx.x][threadIdx.y];
-
+    // 32 x 32 data chunk size with one padding for each row, overall 4096 bytes per chunk
+    __shared__ uint32_t dataChunk[32][33];
+    __shared__ uint16_t byteFlagArray[257];
     __shared__ uint32_t bitflagArr[8];
-    __shared__ uint32_t  byteFlagArray[256];
-    if (threadIdx.x * 4 < 32) {
-        for (int i = 1; i < 4; i++) { smem[threadIdx.x * 4][threadIdx.y] |= smem[threadIdx.x * 4 + i][threadIdx.y]; }
-        byteFlagArray[threadIdx.y * 8 + threadIdx.x] = (smem[threadIdx.x * 4][threadIdx.y] > 0);
+    __shared__ uint32_t startPosition;
+
+    uint32_t byteFlag = 0;
+    uint32_t v;
+
+    v = in[threadIdx.x +  threadIdx.y * 32 + blockIdx.x * 1024];
+    __syncthreads();
+
+#ifdef DEBUG
+    dataChunk[threadIdx.y][threadIdx.x] = v;
+    if(threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    {
+        printf("original data:\n");
+        for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
+        {
+            printf("%u\t", dataChunk[0][tmpIdx]);
+        }
+        printf("\n");
+    }
+#endif
+
+#pragma unroll 32
+    for (int i = 0; i < 32; i++)
+    {
+        dataChunk[threadIdx.y][i] = __ballot_sync(0xFFFFFFFFU, v & (1U << i));
     }
     __syncthreads();
+
+#ifdef DEBUG
+    if(threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    {
+        printf("shuffled data:\n");
+        for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
+        {
+            printf("%u\t", dataChunk[0][tmpIdx]);
+        }
+        printf("\n");
+    }
+#endif
+
+    // generate byteFlagArray
+    if (threadIdx.x < 8) 
+    {
+#pragma unroll 4
+        for (int i = 0; i < 4; i++)
+        { 
+            byteFlag |= dataChunk[threadIdx.x * 4 + i][threadIdx.y]; 
+        }
+        byteFlagArray[threadIdx.y * 8 + threadIdx.x] = byteFlag > 0;
+    }
+    __syncthreads();
+
+    // generate bitFlagArray
     uint32_t buffer;
     if (threadIdx.y < 8) {
         buffer                  = byteFlagArray[threadIdx.y * 32 + threadIdx.x];
         bitflagArr[threadIdx.y] = __ballot_sync(0xFFFFFFFFU, buffer);
     }
     __syncthreads();
-    if (threadIdx.y < 8) {
-        d_byteFlagArray[blockIdx.x * 512 + blockIdx.y * 256 + threadIdx.y * 32 + threadIdx.x] =
-            byteFlagArray[threadIdx.y * 32 + threadIdx.x];
+
+#ifdef DEBUG
+    if(threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    {
+        printf("bit flag array: %u\n", bitflagArr[0]);
     }
+#endif
+
+    // write back bitFlagArray to global memory
     if (threadIdx.x < 8 && threadIdx.y == 0) {
-        d_bitFlagArray[blockIdx.x * 16 + blockIdx.y * 8 + threadIdx.x] = bitflagArr[threadIdx.x];
+        deviceBitFlagArr[blockIdx.x * 8 + threadIdx.x] = bitflagArr[threadIdx.x];
     }
+
+
+    int blockSize = 256;
+    int tid = threadIdx.x + threadIdx.y * 32;
+
+    // prefix summation, up-sweep
+    int prefixSumOffset = 1;
+#pragma unroll 8
+    for (int d = 256 >> 1; d > 0; d = d >> 1)
+    {
+        if (tid < d)
+        {
+            int ai = prefixSumOffset * (2 * tid + 1) - 1;
+            int bi = prefixSumOffset * (2 * tid + 2) - 1;
+            byteFlagArray[bi] += byteFlagArray[ai];
+        }
+        __syncthreads();
+        prefixSumOffset *= 2;
+    }
+
+    // clear the last element
+    if (threadIdx.x == 0 && threadIdx.y == 0)
+    {
+        byteFlagArray[blockSize] = byteFlagArray[blockSize - 1];
+        byteFlagArray[blockSize - 1] = 0;
+    }
+    __syncthreads();
+
+    // prefix summation, down-sweep
+#pragma unroll 8
+    for (int d = 1; d < 256; d *= 2)
+    {
+        prefixSumOffset >>= 1;
+        if (tid < d)
+        {
+            int ai = prefixSumOffset * (2 * tid + 1) - 1;
+            int bi = prefixSumOffset * (2 * tid + 2) - 1;
+
+            uint32_t t = byteFlagArray[ai];
+            byteFlagArray[ai] = byteFlagArray[bi];
+            byteFlagArray[bi] += t;
+        }
+        __syncthreads();
+    }
+
+#ifdef DEBUG
+    if(threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    {
+        printf("byte flag array:\n");
+        for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
+        {
+            printf("%u\t", byteFlagArray[tmpIdx]);
+        }
+        printf("\n");
+    }
+#endif
+
+    // use atomicAdd to reserve a space for compressed data chunk
+    if (threadIdx.x == 0 && threadIdx.y == 0)
+    {
+        startPosition = atomicAdd(deviceOffsetCounter, byteFlagArray[blockSize] * 4);
+        deviceStartPosition[blockIdx.x] = startPosition;
+        deviceCompressedSize[blockIdx.x] = byteFlagArray[blockSize];
+    }
+    __syncthreads();
+
+    // write back the compressed data based on the startPosition
+    int flagIndex = floorf(tid / 4);
+    if(byteFlagArray[flagIndex + 1] != byteFlagArray[flagIndex])
+    {
+        out[startPosition + byteFlagArray[flagIndex] * 4 + tid % 4] = dataChunk[threadIdx.x][threadIdx.y];
+    } 
 }
 
-__global__ void halfBitshuffleDebug(const uint32_t* __restrict__ in, uint32_t* __restrict__ out)
+__global__ void decompressionFusedKernel(
+    uint32_t* deviceInput,
+    uint32_t* deviceOutput,
+    uint32_t* deviceBitFlagArr,
+    uint32_t* deviceStartPosition)
 {
-    /*
-    grid 32x32 threads
-    each thread loads 4 bytes (aligned) = 128 bytes per row of 32
-    total bytes loaded = 32x32x4 = 4096 bytes
-                  x                y  z
-    blocks = ( total_bytes / 8192, 2, 1 )
-    */
-    __shared__ uint32_t smem[32][33];
-    uint32_t            v;
-    /* This thread is going to load 4 bytes. Next thread in x will load
-    the next 4 to be aligned. In total we pick up 32*4 = 128 bytes in this
-    row of 32 (warp) for bit0.
-    The next row (warp) is going to pick up bit1, etc
-    The first grid starts at byte 0 + blockIdx.x * 2048
-    The second grid starts at byte 8192/32/2
-     */
-    smem[threadIdx.y][threadIdx.x] =
-        in[threadIdx.x +        // Aligned loads. 32*4 = 128 bytes
-           threadIdx.y * 32 +   // Offset to next bit = 8192/32/4.
-           blockIdx.x * 2048 +  // Start of the block
-           blockIdx.y * 1024];  // Next 32 reads
-    __syncthreads();            /* Now we loaded 4 kB to smem.   Do the first level of transpose */
-    v = smem[threadIdx.y][threadIdx.x];
+    // allocate shared byte flag array
+    __shared__ uint32_t dataChunk[32][33];
+    __shared__ uint16_t byteFlagArray[257];
+    __shared__ uint32_t startPosition;
+
+    // there are 32 x 32 uint32_t in this data chunk
+    int tid = threadIdx.x + threadIdx.y * blockDim.x;
+    int bid = blockIdx.x;
+
+    // transfer bit flag array to byte flag array
+    uint32_t bitFlag = 0;
+    if(threadIdx.x < 8 && threadIdx.y == 0) 
+    {
+        bitFlag = deviceBitFlagArr[bid * 8 + threadIdx.x];
+#pragma unroll 32
+        for(int tmpInd = 0; tmpInd < 32; tmpInd++)
+        {
+            byteFlagArray[threadIdx.x * 32 + tmpInd] = (bitFlag & (1U<<tmpInd)) > 0;
+        }
+    }
+    __syncthreads();
+
+    int prefixSumOffset = 1;
+    int blockSize = 256;
+
+    // prefix summation, up-sweep
 #pragma unroll 8
-    for (int i = 0; i < 8; i++) smem[threadIdx.y][i] = __ballot_sync(0xFFFFFFFFU, v & (1U << i));
+    for (int d = 256 >> 1; d > 0; d = d >> 1)
+    {
+        if (tid < d)
+        {
+            int ai = prefixSumOffset * (2 * tid + 1) - 1;
+            int bi = prefixSumOffset * (2 * tid + 2) - 1;
+            byteFlagArray[bi] += byteFlagArray[ai];
+        }
+        __syncthreads();
+        prefixSumOffset *= 2;
+    }
+
+    // clear the last element
+    if (threadIdx.x == 0 && threadIdx.y == 0)
+    {
+        byteFlagArray[blockSize] = byteFlagArray[blockSize - 1];
+        byteFlagArray[blockSize - 1] = 0;
+    }
+    __syncthreads();
+
+    // prefix summation, down-sweep
 #pragma unroll 8
-    for (int i = 16; i < 24; i++) smem[threadIdx.y][i] = __ballot_sync(0xFFFFFFFFU, v & (1U << i));
-    int     quotient                                            = threadIdx.x / 4;
-    int     reminder                                            = threadIdx.x % 4;
-    uint8_t first                                               = *((uint8_t*)(&v));
-    uint8_t third                                               = *((uint8_t*)(&v) + 2);
-    *((uint8_t*)(&smem[threadIdx.y][8 + quotient]) + reminder)  = first;
-    *((uint8_t*)(&smem[threadIdx.y][24 + quotient]) + reminder) = third;
-    __syncthreads(); /* Now we loaded 4 kB to smem.   Do the first level of transpose */
-    out[threadIdx.x + threadIdx.y * 32 + blockIdx.y * 1024 + blockIdx.x * 2048] = smem[threadIdx.x][threadIdx.y];
+    for (int d = 1; d < 256; d *= 2)
+    {
+        prefixSumOffset >>= 1;
+        if (tid < d)
+        {
+            int ai = prefixSumOffset * (2 * tid + 1) - 1;
+            int bi = prefixSumOffset * (2 * tid + 2) - 1;
+
+            uint32_t t = byteFlagArray[ai];
+            byteFlagArray[ai] = byteFlagArray[bi];
+            byteFlagArray[bi] += t;
+        }
+        __syncthreads();
+    }
+
+#ifdef DEBUG
+    if(threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    {
+        printf("decompressed byte flag array:\n");
+        for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
+        {
+            printf("%u\t", byteFlagArray[tmpIdx]);
+        }
+        printf("\n");
+    }
+#endif
+
+    // initialize the shared memory to all 0
+    dataChunk[threadIdx.y][threadIdx.x] = 0;
+    __syncthreads();
+
+    // get the start position
+    if (threadIdx.x == 0 && threadIdx.y == 0)
+    {
+        startPosition = deviceStartPosition[bid];
+    }
+    __syncthreads();
+
+    // write back shuffled data to shared mem
+    int byteFlagInd = tid / 4;
+    if(byteFlagArray[byteFlagInd + 1] != byteFlagArray[byteFlagInd])
+    {
+        dataChunk[threadIdx.x][threadIdx.y] = deviceInput[startPosition + byteFlagArray[byteFlagInd] * 4 + tid % 4];
+    }
+    __syncthreads();
+
+    // store the corresponding uint32 to the register buffer
+    uint32_t buffer = dataChunk[threadIdx.y][threadIdx.x];
+    __syncthreads();
+
+    // bitshuffle (reverse)
+#pragma unroll 32
+    for (int i = 0; i < 32; i++)
+    {
+        dataChunk[threadIdx.y][i] = __ballot_sync(0xFFFFFFFFU, buffer & (1U << i));
+    }
+    __syncthreads();
+
+#ifdef DEBUG
+    if(threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    {
+        printf("decomopressed data:\n");
+        for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
+        {
+            printf("%u\t", dataChunk[0][tmpIdx]);
+        }
+        printf("\n");
+    }
+#endif
+
+    // write back to global memory
+    deviceOutput[tid + bid * blockDim.x * blockDim.y] = dataChunk[threadIdx.y][threadIdx.x];
 }
 
-void runSzs(std::string fileName, int x, int y, int z, double eb)
+void runFzgpu(std::string fileName, int x, int y, int z, double eb)
 {
-    // auto len3 = dim3(3600, 1800, 1);
-    auto len3     = dim3(x, y, z);
-    int  fileSize = GetFileSize(fileName);
-    auto len      = int(fileSize / sizeof(float));
+    auto inputDimension = dim3(x, y, z);
+    int  inputSize = GetFileSize(fileName);
+    auto dataTypeLen = int(inputSize / sizeof(float));
 
-    float*    data;
-    float*    h_data;
-    bool*     signum;
-    uint16_t* quant;
-    float     time_elapsed;
+    float*    hostInput;
+    float     timeElapsed;
+    uint32_t  offsetSum;
 
+    float*    deviceInput;
+    uint16_t* deviceCompressedOutput;
+    uint32_t* deviceBitFlagArr;
+    uint16_t* deviceQuantizationCode;
+    uint32_t* deviceOffsetCounter;
+    uint32_t* deviceStartPosition;
+    uint32_t* deviceCompressedSize;
+    uint16_t* deviceDecompressedQuantizationCode;
+    float*    deviceDecompressedOutput;
 
-    h_data = read_binary_to_new_array<float>(fileName, len);
-    float range = *std::max_element(h_data , h_data + len) - *std::min_element(h_data , h_data + len);
-    CHECK_CUDA(cudaMalloc((void**)&data, sizeof(float) * len));
-    CHECK_CUDA(cudaMemcpy(data, h_data, sizeof(float) * len, cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMalloc((void**)&quant, sizeof(uint16_t) * len));
-    CHECK_CUDA(cudaMemset(quant, 0, sizeof(uint16_t) * len));
-    CHECK_CUDA(cudaMalloc((void**)&signum, sizeof(bool) * len));
+    bool*     deviceSignNum;
 
+    int  blockSize = 16;
+    auto quantizationCodeByteLen = dataTypeLen * 2;  // quantization code length in unit of bytes
+    quantizationCodeByteLen = quantizationCodeByteLen % 4096 == 0 ? quantizationCodeByteLen : quantizationCodeByteLen - quantizationCodeByteLen % 4096 + 4096;
+    auto paddingDataTypeLen = quantizationCodeByteLen / 2;
+    int dataChunkSize = quantizationCodeByteLen % (blockSize * UINT32_BIT_LEN) == 0 ? quantizationCodeByteLen / (blockSize * UINT32_BIT_LEN) : int(quantizationCodeByteLen / (blockSize * UINT32_BIT_LEN)) + 1;
+
+    dim3 block(32, 32);
+    dim3 grid(floor(paddingDataTypeLen / 2048));  // divided by 2 is because the file is transformed from uint32 to uint16
+
+    hostInput = read_binary_to_new_array<float>(fileName, paddingDataTypeLen);
+    float range = *std::max_element(hostInput , hostInput + paddingDataTypeLen) - *std::min_element(hostInput , hostInput + paddingDataTypeLen);
+
+    CHECK_CUDA(cudaMalloc((void**)&deviceInput, sizeof(float) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMalloc((void**)&deviceQuantizationCode, sizeof(uint16_t) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMalloc((void**)&deviceSignNum, sizeof(bool) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMalloc((void**)&deviceCompressedOutput, sizeof(uint16_t) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMalloc((void**)&deviceBitFlagArr, sizeof(uint32_t) * dataChunkSize));
+    CHECK_CUDA(cudaMalloc((void**)&deviceDecompressedQuantizationCode, sizeof(uint16_t) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMalloc((void**)&deviceDecompressedOutput, sizeof(float) * paddingDataTypeLen));
+
+    CHECK_CUDA(cudaMalloc((void**)&deviceOffsetCounter, sizeof(uint32_t)));
+    CHECK_CUDA(cudaMalloc((void**)&deviceStartPosition, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
+    CHECK_CUDA(cudaMalloc((void**)&deviceCompressedSize, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
+    
+    CHECK_CUDA(cudaMemset(deviceQuantizationCode, 0, sizeof(uint16_t) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMemset(deviceBitFlagArr, 0, sizeof(uint32_t) * dataChunkSize));
+    CHECK_CUDA(cudaMemset(deviceDecompressedQuantizationCode, 0, sizeof(uint16_t) * paddingDataTypeLen));
+
+    CHECK_CUDA(cudaMemset(deviceOffsetCounter, 0, sizeof(uint32_t)));
+    CHECK_CUDA(cudaMemset(deviceStartPosition, 0, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
+    CHECK_CUDA(cudaMemset(deviceCompressedSize, 0, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
+    CHECK_CUDA(cudaMemset(deviceDecompressedOutput, 0, sizeof(float) * paddingDataTypeLen));
+
+    CHECK_CUDA(cudaMemcpy(deviceInput, hostInput, sizeof(float) * dataTypeLen, cudaMemcpyHostToDevice));
+    
+    
     cudaStream_t stream;
     cudaStreamCreate(&stream);
 
-    // absolute error bound
-    cusz::experimental::launch_construct_LorenzoI_var<float, uint16_t, float>(
-        data, quant, signum, len3, eb * range, time_elapsed, stream);
+    // pre-quantization
+    cusz::experimental::launch_construct_LorenzoI_var<float, uint16_t, float>(deviceInput, deviceQuantizationCode, deviceSignNum, inputDimension, eb * range, timeElapsed, stream);
 
-    CHECK_CUDA(cudaFree(data));
-    CHECK_CUDA(cudaFree(signum));
+    // bitshuffle kernel
+    compressionFusedKernel<<<grid, block>>>((uint32_t*)deviceQuantizationCode, (uint32_t*)deviceCompressedOutput, deviceOffsetCounter, deviceBitFlagArr, deviceStartPosition, deviceCompressedSize);
 
-    uint16_t* bitshuffleOut;
-    CHECK_CUDA(cudaMalloc((void**)&bitshuffleOut, sizeof(uint16_t) * len));
-    CHECK_CUDA(cudaMemcpy(bitshuffleOut, quant, sizeof(uint16_t) * len, cudaMemcpyDeviceToDevice));
+    // de-bitshuffle kernel
+    decompressionFusedKernel<<<grid, block>>>((uint32_t*)deviceCompressedOutput, (uint32_t*)deviceDecompressedQuantizationCode, deviceBitFlagArr, deviceStartPosition);
 
-    int  blockSize    = 16;
-    auto newLen       = len * 2;  // bitshuffle result length in byte unit
-    newLen            = newLen % 8192 == 0 ? newLen : newLen - newLen % 8192 + 8192;
-    int dataChunkSize = newLen % (blockSize * UINT32_BIT_LEN) == 0 ? newLen / (blockSize * UINT32_BIT_LEN)
-                                                                   : int(newLen / (blockSize * UINT32_BIT_LEN)) + 1;
-    uint32_t* d_bitFlagArray;
-    uint32_t*  d_byteFlagArray;
+    // de-pre-quantization
+    cusz::experimental::launch_reconstruct_LorenzoI_var<float, uint16_t, float>(deviceSignNum, deviceDecompressedQuantizationCode, deviceDecompressedOutput, inputDimension, eb * range, timeElapsed,  stream);
 
-    uint8_t* d_out;
-    CHECK_CUDA(cudaMalloc((void**)&d_bitFlagArray, sizeof(uint32_t) * dataChunkSize));
-    CHECK_CUDA(cudaMemset(d_bitFlagArray, 0, sizeof(uint32_t) * dataChunkSize));
-    CHECK_CUDA(cudaMalloc((void**)&d_byteFlagArray, sizeof(uint32_t) * dataChunkSize * UINT32_BIT_LEN));
-    CHECK_CUDA(cudaMemset(d_byteFlagArray, 0, sizeof(uint32_t) * dataChunkSize * UINT32_BIT_LEN));
+#ifdef VERIFICATION
 
-    CHECK_CUDA(cudaMalloc((void**)&d_out, sizeof(uint8_t) * dataChunkSize * blockSize * UINT32_BIT_LEN));
-    CHECK_CUDA(cudaMemset(d_out, 0, sizeof(uint8_t) * dataChunkSize * blockSize * UINT32_BIT_LEN));
+    uint16_t* hostQuantizationCode;
+    hostQuantizationCode = (uint16_t*)malloc(sizeof(uint16_t) * dataTypeLen);
+    CHECK_CUDA(cudaMemcpy(hostQuantizationCode, deviceQuantizationCode, sizeof(uint16_t) * dataTypeLen, cudaMemcpyDeviceToHost));
 
-    dim3 threads(32, 32);
-    dim3 grid(floor(newLen / 8192), 2, 1);  // divided by 2 is because the file is transformed from uint32 to uint16
-    bitshuffleAndBitflag<<<grid, threads>>>(
-        (uint32_t*)quant, (uint32_t*)bitshuffleOut, blockSize, d_bitFlagArray, d_byteFlagArray);
-    CHECK_CUDA(cudaFree(quant));
+    // bitshuffle verification
+    uint16_t* hostDecompressedQuantizationCode;
+    hostDecompressedQuantizationCode = (uint16_t*)malloc(sizeof(uint16_t) * dataTypeLen);
+    CHECK_CUDA(cudaMemcpy(hostDecompressedQuantizationCode, deviceDecompressedQuantizationCode, sizeof(uint16_t) * dataTypeLen, cudaMemcpyDeviceToHost));
 
-    newLen        = len * 2;  // bitshuffle result length in byte unit
-    dataChunkSize = newLen % (blockSize * UINT32_BIT_LEN) == 0 ? newLen / (blockSize * UINT32_BIT_LEN)
-                                                               : int(newLen / (blockSize * UINT32_BIT_LEN)) + 1;
-    uint32_t* d_preSumArray;
-    CHECK_CUDA(
-        cudaMalloc((void**)&d_preSumArray, sizeof(uint32_t) * dataChunkSize * UINT32_BIT_LEN + sizeof(uint32_t)));
-    CHECK_CUDA(cudaMemset(d_preSumArray, 0, sizeof(uint32_t) * dataChunkSize * UINT32_BIT_LEN + sizeof(uint32_t)));
-    uint32_t* d_byteFlagArrayTest;
-    CHECK_CUDA(cudaMalloc((void**)&d_byteFlagArrayTest, sizeof(uint32_t) * dataChunkSize * UINT32_BIT_LEN));
-    CHECK_CUDA(cudaMemcpy(
-        d_byteFlagArrayTest, d_byteFlagArray, sizeof(uint32_t) * dataChunkSize * UINT32_BIT_LEN,
-        cudaMemcpyDeviceToDevice));
-    CHECK_CUDA(cudaFree(d_byteFlagArray));
+    cudaDeviceSynchronize();
 
-    void*  d_temp_storage     = NULL;
-    size_t temp_storage_bytes = 0;
-    cub::DeviceScan::ExclusiveSum(
-        d_temp_storage, temp_storage_bytes, d_byteFlagArrayTest, d_preSumArray, dataChunkSize * UINT32_BIT_LEN);
-    // Allocate temporary storage
-    CHECK_CUDA(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-    // Run exclusive prefix sum
-    cub::DeviceScan::ExclusiveSum(
-        d_temp_storage, temp_storage_bytes, d_byteFlagArrayTest, d_preSumArray, dataChunkSize * UINT32_BIT_LEN);
+    printf("begin bitshuffle verification\n");
+    bool bitshuffleVerify = true;
+    for (int tmpIdx = 0; tmpIdx < dataTypeLen; tmpIdx++)
+    {
+        if(hostQuantizationCode[tmpIdx] != hostDecompressedQuantizationCode[tmpIdx])
+        {
+            printf("data type len: %u\n", dataTypeLen);
+            printf("verification failed at index: %d\noriginal quantization code: %u\ndecompressed quantization code: %u\n", tmpIdx, hostQuantizationCode[tmpIdx], hostDecompressedQuantizationCode[tmpIdx]);
+            bitshuffleVerify = false;
+            break;
+        }
+    }
+
+    free(hostQuantizationCode);
+    free(hostDecompressedQuantizationCode);
+
+    // pre-quantization verification
+    float* hostDecompressedOutput;
+    hostDecompressedOutput = (float*)malloc(sizeof(float) * dataTypeLen);
+    CHECK_CUDA(cudaMemcpy(hostDecompressedOutput, deviceDecompressedOutput, sizeof(float) * dataTypeLen, cudaMemcpyDeviceToHost));
+
+    cudaDeviceSynchronize();
+
+    bool prequantizationVerify = true;
+    if(bitshuffleVerify)
+    {
+        printf("begin pre-quantization verification\n");
+        for (int tmpIdx = 0; tmpIdx < dataTypeLen; tmpIdx++)
+        {
+            if(std::abs(hostInput[tmpIdx] - hostDecompressedOutput[tmpIdx]) > float(eb * 1.01 * range))
+            {
+                printf("verification failed at index: %d\noriginal data: %f\ndecompressed data: %f\n", tmpIdx, hostInput[tmpIdx], hostDecompressedOutput[tmpIdx]);
+                printf("error is: %f, while error bound is: %f\n", std::abs(hostInput[tmpIdx] - hostDecompressedOutput[tmpIdx]), float(eb * range));
+                prequantizationVerify = false;
+                break;
+            }
+        }
+    }
+
+    free(hostDecompressedOutput);
     
-    uint32_t* lastSum = (uint32_t*)malloc(sizeof(uint32_t));
-    CHECK_CUDA(
-        cudaMemcpy(lastSum, d_preSumArray + dataChunkSize * UINT32_BIT_LEN - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost));
-    uint32_t* lastFlag = (uint32_t*)malloc(sizeof(uint32_t));
-    CHECK_CUDA(
-        cudaMemcpy(lastFlag, d_byteFlagArrayTest + dataChunkSize * UINT32_BIT_LEN - 1, sizeof(uint32_t), cudaMemcpyDeviceToHost));
-    uint32_t* result = (uint32_t*)malloc(sizeof(uint32_t));
-    *result = *lastSum + *lastFlag;
-    CHECK_CUDA(
-        cudaMemcpy(d_preSumArray + dataChunkSize * UINT32_BIT_LEN, result, sizeof(uint32_t), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaFree(d_byteFlagArrayTest));
-    CHECK_CUDA(cudaFree(d_temp_storage));
-    encodeDebug<<<dataChunkSize, 32>>>(
-        blockSize, (uint8_t*)bitshuffleOut, d_out, d_preSumArray);  
-    printf("original size: %d\n", fileSize);
-    printf("compressed size: %d\n", sizeof(uint32_t) * dataChunkSize + blockSize * (*result));
-    printf(
-        "compression ratio: %f\n", float(fileSize) / float(sizeof(uint32_t) * dataChunkSize + blockSize * (*result)));
+    // print verification result
+    if(bitshuffleVerify)
+    {
+        printf("bitshuffle verification succeed!\n");
+        if(prequantizationVerify)
+        {
+            printf("pre-quantization verification succeed!\n");
+        }
+        else
+        {
+            printf("pre-quantization verification fail\n");
+        }
+    }
+    else
+    {
+        printf("bitshuffle verification fail\n");
+    }
+
+#endif
+
+    CHECK_CUDA(cudaMemcpy(&offsetSum, deviceOffsetCounter, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+    printf("original size: %d\n", inputSize);
+    printf("compressed size: %ld\n", sizeof(uint32_t) * dataChunkSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * int(quantizationCodeByteLen / 4096));
+    printf("compression ratio: %f\n", float(inputSize) / float(sizeof(uint32_t) * dataChunkSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
+
+    CHECK_CUDA(cudaFree(deviceQuantizationCode));
+    CHECK_CUDA(cudaFree(deviceInput));
+    CHECK_CUDA(cudaFree(deviceSignNum));
+    CHECK_CUDA(cudaFree(deviceCompressedOutput));
+    CHECK_CUDA(cudaFree(deviceBitFlagArr));
+
+    CHECK_CUDA(cudaFree(deviceOffsetCounter));
+    CHECK_CUDA(cudaFree(deviceStartPosition));
+    CHECK_CUDA(cudaFree(deviceCompressedSize));
+    CHECK_CUDA(cudaFree(deviceDecompressedQuantizationCode));
+    CHECK_CUDA(cudaFree(deviceDecompressedOutput));
+
     cudaStreamDestroy(stream);
-    CHECK_CUDA(cudaFree(bitshuffleOut));
-    CHECK_CUDA(cudaFree(d_bitFlagArray));
-    CHECK_CUDA(cudaFree(d_preSumArray));
-    CHECK_CUDA(cudaFree(d_out));
-    delete[] h_data;
-    free(result);
-    free(lastSum);
-    free(lastFlag);
+
+    delete[] hostInput;
+
     return;
 }
 
@@ -338,6 +514,6 @@ int main(int argc, char* argv[])
     int    z  = std::stoi(argv[4]);
     double eb = std::stod(argv[5]);
 
-    runSzs(fileName, x, y, z, eb);
+    runFzgpu(fileName, x, y, z, eb);
     return 0;
 }

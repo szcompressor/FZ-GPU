@@ -58,8 +58,11 @@ pred1d(Data thread_scope[SEQ], volatile bool* shmem_signum, volatile ErrCtrl* sh
 #pragma unroll
         for (auto i = 1; i < SEQ; i++) {
             Data delta                  = thread_scope[i] - thread_scope[i - 1];
-            shmem_signum[i + TIX * SEQ] = delta < 0;  // signum
-            shmem_delta[i + TIX * SEQ]  = static_cast<ErrCtrl>(fabs(delta));
+            // shmem_signum[i + TIX * SEQ] = delta < 0;  // signum
+            // shmem_delta[i + TIX * SEQ]  = static_cast<ErrCtrl>(fabs(delta));
+            ErrCtrl tmp = static_cast<ErrCtrl>(fabs(delta));
+            tmp |= ((delta < 0) << 15);
+            shmem_delta[i + TIX * SEQ]  = tmp;
         }
         __syncthreads();
     }
@@ -338,8 +341,10 @@ __global__ void x_lorenzo_1d1l(  //
 #pragma unroll
     for (auto i = 0; i < SEQ; i++) {
         auto id               = (BIX * BDX + TIX) * SEQ + i;
+        ErrCtrl highestBit = thread_scope_delta[i] >> 15;
+        Data tmpSign = static_cast<Data>(highestBit > 0 ? -1 : 1);
         thread_scope.xdata[i] = id < len3.x  //
-                                    ? (thread_scope.signum[i] ? -1 : 1) * static_cast<Data>(thread_scope_delta[i])
+                                    ? tmpSign * static_cast<Data>(thread_scope_delta[i] - (highestBit << 15))
                                     : 0;
     }
     __syncthreads();
@@ -397,7 +402,11 @@ x_lorenzo_2d1l_16x16data_mapto16x2(bool* signum, ErrCtrl* delta, Data* xdata, di
         auto gid = get_gid(i);
         // even if we hit the else branch, all threads in a warp hit the y-boundary simultaneously
         if (gix < len3.x and giy_base + i < len3.y)
-            thread_scope[i] = (signum[gid] ? -1 : 1) * static_cast<Data>(delta[gid]);  // fuse
+        {
+            ErrCtrl highestBit = delta[gid] >> 15;
+            Data tmpSign = static_cast<Data>(highestBit > 0 ? -1 : 1);
+            thread_scope[i] = tmpSign * static_cast<Data>(delta[gid] - (highestBit << 15)); // fuse
+        }
         else
             thread_scope[i] = 0;  // TODO set as init state?
     }
@@ -462,7 +471,11 @@ x_lorenzo_3d1l_32x8x8data_mapto32x1x8(bool* signum, ErrCtrl* delta, Data* xdata,
     for (auto y = 0; y < YSEQ; y++) {
         auto gid = get_gid(y);
         if (gix < len3.x and giy_base + y < len3.y and giz < len3.z)
-            thread_scope[y] = (signum[gid] ? -1 : 1) * static_cast<Data>(delta[gid]);
+        {
+            ErrCtrl highestBit = delta[gid] >> 15;
+            Data tmpSign = static_cast<Data>(highestBit > 0 ? -1 : 1);
+            thread_scope[y] = tmpSign * static_cast<Data>(delta[gid] - (highestBit << 15)); // fuse
+        }
         else
             thread_scope[y] = 0;
     }
