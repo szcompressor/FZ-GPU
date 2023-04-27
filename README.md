@@ -46,4 +46,4 @@ nsys profile --stats=true ./fz-gpu exafel-59200x388 39200 388 1 1e-3
 nsys profile --stats=true ./fz-gpu hurr-CLOUDf48-500x500x100 500 500 100 1e-3
 ```
 
-You will observe the time of our each kernel, i.e., cusz::experimental::c_lorenzo_1d/2d/3d (optimized Lorenzo kernel), bitshuffleAndBitflag (bitshuffle kernel), encodeDebug (encode kernel), cub::DeviceScanInitKernel, cub::DeviceScanKernel (prefix-sum kernels). 
+You will observe the time of our each kernel, i.e., cusz::experimental::c_lorenzo_1d/2d/3d (optimized Lorenzo kernel), compressionFusedKernel (fused compression kernel), cusz::experimental::x_lorenzo_1d/2d/3d (Lorenzo decompression kernel), decompressionFusedKernel (fused decompression kernel). 
