@@ -1,6 +1,6 @@
 # FZ-GPU: A Fast and High-Ratio Lossy Compressor for Scientific Data on GPUs
 
-This software is implemented and optimized based on the [cuSZ framework](https://github.com/szcompressor/cuSZ). Specifically, we modified cuSZ’s dual-quantization kernel in kernel/lorenzo_var.cuh and implement our bitshuffle and new lossless encode kernels in fz.cu. FZ-GPU performs compression and decompression together (we will provide options to do compression and decompression separately in the future).
+This software is implemented and optimized based on the [cuSZ](https://github.com/szcompressor/cuSZ) framework. Specifically, FZ-GPU modifies cuSZ's dual-quantization kernel and implements a fused kernel containing the bitshuffle operation and a new lossless encoder. Currently, FZ-GPU performs compression and decompression together, but we plan to provide options for performing compression and decompression separately in the future.
 
 (C) 2023 by Indiana University and Argonne National Laboratory.
 
@@ -13,20 +13,20 @@ This software is implemented and optimized based on the [cuSZ framework](https:/
 - CUDA (11.4.120)
 
 ## Compile
-Please use the following command to compile FZ-GPU and you will get the executable ```fz-gpu```.
+Please use the following command to compile FZ-GPU. You will get the executable ```fz-gpu```.
 ```
 make -j
 ```
 
 ## Download Data
-Please use ```get_sample_data.sh``` to download the sample data or more datasets from [SDRBench](http://sdrbench.github.io/).
+Please use ```get_sample_data.sh``` to download the sample data. More datasets can be downloaded from [SDRBench](http://sdrbench.github.io/).
 
 ```
 ./get_sample_data.sh
 ```
 
 ## Run FZ-GPU
-Please use the below command to test ```fz-gpu``` on the example float32 data.
+Please use the below command to run ```fz-gpu``` on a float32 data.
 ```
 ./fz-gpu [input data path] [dimension x] [dimension y] [dimension z] [error bound]
 ```
@@ -37,21 +37,25 @@ For example,
 ./fz-gpu hurr-CLOUDf48-500x500x100 500 500 100 1e-3
 ```
 
-Finally, you will observe the output including compression ratio.
+Finally, you can observe the output including compression ratio, compression/decompression end-to-end times, and compression/decompression end-to-end throughputs.
 ```
-original size: 25920000
-compressed size: 3105556
-compression ratio: 8.346332
+original size: 100000000
+compressed size: 8142016
+compression ratio: 12.281970
+compression e2e time: 0.00094059 s
+compression e2e throughput: 99.0147 GB/s
+decompression e2e time: 0.00110158 s
+decompression e2e throughput: 84.5439 GB/s
 ```
 
-To get the time of our compression, please add ```nsys``` before the execution command, like
+To obtain more accurate timing for the compression kernel, please use ```nsys``` before the execution command, like
 ```
 nsys profile --stats=true ./fz-gpu cesm-CLDHGH-3600x1800 3600 1800 1 1e-3
 nsys profile --stats=true ./fz-gpu exafel-59200x388 39200 388 1 1e-3
 nsys profile --stats=true ./fz-gpu hurr-CLOUDf48-500x500x100 500 500 100 1e-3
 ```
 
-You will observe the time of our each kernel, i.e., cusz::experimental::c_lorenzo_1d/2d/3d (optimized Lorenzo kernel), compressionFusedKernel (fused compression kernel), cusz::experimental::x_lorenzo_1d/2d/3d (Lorenzo decompression kernel), decompressionFusedKernel (fused decompression kernel). 
+You will observe the time for each kernel, i.e., cusz::experimental::c_lorenzo_1d/2d/3d (optimized Lorenzo kernel), compressionFusedKernel (fused compression kernel), cusz::experimental::x_lorenzo_1d/2d/3d (Lorenzo reconstruction kernel), and decompressionFusedKernel (fused decompression kernel).
 
 ## Citing FZ-GPU
 **HPDC '23: FZ-GPU** ([local copy](HPDC23-FZ-GPU.pdf), [via ACM](https://dl.acm.org/doi/10.1145/3588195.3592994), or [via arXiv](https://arxiv.org/abs/2304.12557))
