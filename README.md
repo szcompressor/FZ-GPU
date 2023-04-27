@@ -1,6 +1,6 @@
 # FZ-GPU: A Fast and High-Ratio Lossy Compressor for Scientific Data on GPUs
 
-This software is implemented and optimized based on the [cuSZ framework](https://github.com/szcompressor/cuSZ). Specifically, we modified cuSZ’s dual-quantization kernel in kernel/lorenzo_var.cuh and implement our bitshuffle and new lossless encode kernels in fz.cu. 
+This software is implemented and optimized based on the [cuSZ framework](https://github.com/szcompressor/cuSZ). Specifically, we modified cuSZ’s dual-quantization kernel in kernel/lorenzo_var.cuh and implement our bitshuffle and new lossless encode kernels in fz.cu. FZ-GPU performs compression and decompression together (we will provide options to do compression and decompression separately in the future).
 
 ## Environment
 - NVIDIA GPUs
