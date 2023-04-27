@@ -501,11 +501,11 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
     std::chrono::duration<double> compressionTime = compressionEnd - compressionStart;
     std::chrono::duration<double> decompressionTime = decompressionEnd - decompressionStart;
     
-    std::cout << "compression time: " << compressionTime.count() << " s\n";
-    std::cout << "compression end to end throughput: " << float(inputSize) / 1024 / 1024 /1024 / compressionTime.count() << " GB/s\n";
+    std::cout << "compression e2e time: " << compressionTime.count() << " s\n";
+    std::cout << "compression e2e throughput: " << float(inputSize) / 1024 / 1024 /1024 / compressionTime.count() << " GB/s\n";
 
-    std::cout << "decompression time: " << decompressionTime.count() << " s\n";
-    std::cout << "decompression end to end throughput: " << float(inputSize) / 1024 / 1024 /1024 / decompressionTime.count() << " GB/s\n";
+    std::cout << "decompression e2e time: " << decompressionTime.count() << " s\n";
+    std::cout << "decompression e2e throughput: " << float(inputSize) / 1024 / 1024 /1024 / decompressionTime.count() << " GB/s\n";
 
     CHECK_CUDA(cudaFree(deviceQuantizationCode));
     CHECK_CUDA(cudaFree(deviceInput));
