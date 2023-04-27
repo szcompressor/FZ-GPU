@@ -39,13 +39,12 @@ For example,
 
 Finally, you can observe the output including compression ratio, compression/decompression end-to-end times, and compression/decompression end-to-end throughputs.
 ```
-original size: 100000000
-compressed size: 8142016
-compression ratio: 12.281970
-compression e2e time: 0.00094059 s
-compression e2e throughput: 99.0147 GB/s
-decompression e2e time: 0.00110158 s
-decompression e2e throughput: 84.5439 GB/s
+compressed size: 8975636
+compression ratio: 21.113260
+compression time: 0.000985528 s
+compression e2e throughput: 179.082 GB/s
+decompression time: 0.00114546 s
+decompression e2d throughput: 154.079 GB/s
 ```
 
 To obtain more accurate timing for the compression kernel, please use ```nsys``` before the execution command, like
