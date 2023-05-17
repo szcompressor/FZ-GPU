@@ -13,47 +13,48 @@
 #include "../include/utils/cuda_err.cuh"
 
 #define UINT32_BIT_LEN 32
-// #define VERIFICATION
+#define VERIFICATION
 // #define DEBUG
-
 
 long GetFileSize(std::string fidataTypeLename)
 {
     struct stat stat_buf;
-    int         rc = stat(fidataTypeLename.c_str(), &stat_buf);
+    int rc = stat(fidataTypeLename.c_str(), &stat_buf);
     return rc == 0 ? stat_buf.st_size : -1;
 }
 
 template <typename T>
-T* read_binary_to_new_array(const std::string& fname, size_t dtype_dataTypeLen)
+T *read_binary_to_new_array(const std::string &fname, size_t dtype_dataTypeLen)
 {
     std::ifstream ifs(fname.c_str(), std::ios::binary | std::ios::in);
-    if (not ifs.is_open()) {
+    if (not ifs.is_open())
+    {
         std::cerr << "fail to open " << fname << std::endl;
         exit(1);
     }
     auto _a = new T[dtype_dataTypeLen]();
-    ifs.read(reinterpret_cast<char*>(_a), std::streamsize(dtype_dataTypeLen * sizeof(T)));
+    ifs.read(reinterpret_cast<char *>(_a), std::streamsize(dtype_dataTypeLen * sizeof(T)));
     ifs.close();
     return _a;
 }
 
 template <typename T>
-void write_array_to_binary(const std::string& fname, T* const _a, size_t const dtype_dataTypeLen)
+void write_array_to_binary(const std::string &fname, T *const _a, size_t const dtype_dataTypeLen)
 {
     std::ofstream ofs(fname.c_str(), std::ios::binary | std::ios::out);
-    if (not ofs.is_open()) return;
-    ofs.write(reinterpret_cast<const char*>(_a), std::streamsize(dtype_dataTypeLen * sizeof(T)));
+    if (not ofs.is_open())
+        return;
+    ofs.write(reinterpret_cast<const char *>(_a), std::streamsize(dtype_dataTypeLen * sizeof(T)));
     ofs.close();
 }
 
 __global__ void compressionFusedKernel(
-    const uint32_t* __restrict__ in,
-    uint32_t* __restrict__ out,
-    uint32_t* deviceOffsetCounter,
-    uint32_t* deviceBitFlagArr,
-    uint32_t* deviceStartPosition,
-    uint32_t* deviceCompressedSize)
+    const uint32_t *__restrict__ in,
+    uint32_t *__restrict__ out,
+    uint32_t *deviceOffsetCounter,
+    uint32_t *deviceBitFlagArr,
+    uint32_t *deviceStartPosition,
+    uint32_t *deviceCompressedSize)
 {
     // 32 x 32 data chunk size with one padding for each row, overall 4096 bytes per chunk
     __shared__ uint32_t dataChunk[32][33];
@@ -64,12 +65,12 @@ __global__ void compressionFusedKernel(
     uint32_t byteFlag = 0;
     uint32_t v;
 
-    v = in[threadIdx.x +  threadIdx.y * 32 + blockIdx.x * 1024];
+    v = in[threadIdx.x + threadIdx.y * 32 + blockIdx.x * 1024];
     __syncthreads();
 
 #ifdef DEBUG
     dataChunk[threadIdx.y][threadIdx.x] = v;
-    if(threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
     {
         printf("original data:\n");
         for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
@@ -88,7 +89,7 @@ __global__ void compressionFusedKernel(
     __syncthreads();
 
 #ifdef DEBUG
-    if(threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
     {
         printf("shuffled data:\n");
         for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
@@ -100,12 +101,12 @@ __global__ void compressionFusedKernel(
 #endif
 
     // generate byteFlagArray
-    if (threadIdx.x < 8) 
+    if (threadIdx.x < 8)
     {
 #pragma unroll 4
         for (int i = 0; i < 4; i++)
-        { 
-            byteFlag |= dataChunk[threadIdx.x * 4 + i][threadIdx.y]; 
+        {
+            byteFlag |= dataChunk[threadIdx.x * 4 + i][threadIdx.y];
         }
         byteFlagArray[threadIdx.y * 8 + threadIdx.x] = byteFlag > 0;
     }
@@ -113,24 +114,25 @@ __global__ void compressionFusedKernel(
 
     // generate bitFlagArray
     uint32_t buffer;
-    if (threadIdx.y < 8) {
-        buffer                  = byteFlagArray[threadIdx.y * 32 + threadIdx.x];
+    if (threadIdx.y < 8)
+    {
+        buffer = byteFlagArray[threadIdx.y * 32 + threadIdx.x];
         bitflagArr[threadIdx.y] = __ballot_sync(0xFFFFFFFFU, buffer);
     }
     __syncthreads();
 
 #ifdef DEBUG
-    if(threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
     {
         printf("bit flag array: %u\n", bitflagArr[0]);
     }
 #endif
 
     // write back bitFlagArray to global memory
-    if (threadIdx.x < 8 && threadIdx.y == 0) {
+    if (threadIdx.x < 8 && threadIdx.y == 0)
+    {
         deviceBitFlagArr[blockIdx.x * 8 + threadIdx.x] = bitflagArr[threadIdx.x];
     }
-
 
     int blockSize = 256;
     int tid = threadIdx.x + threadIdx.y * 32;
@@ -176,7 +178,7 @@ __global__ void compressionFusedKernel(
     }
 
 #ifdef DEBUG
-    if(threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
     {
         printf("byte flag array:\n");
         for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
@@ -198,17 +200,17 @@ __global__ void compressionFusedKernel(
 
     // write back the compressed data based on the startPosition
     int flagIndex = floorf(tid / 4);
-    if(byteFlagArray[flagIndex + 1] != byteFlagArray[flagIndex])
+    if (byteFlagArray[flagIndex + 1] != byteFlagArray[flagIndex])
     {
         out[startPosition + byteFlagArray[flagIndex] * 4 + tid % 4] = dataChunk[threadIdx.x][threadIdx.y];
-    } 
+    }
 }
 
 __global__ void decompressionFusedKernel(
-    uint32_t* deviceInput,
-    uint32_t* deviceOutput,
-    uint32_t* deviceBitFlagArr,
-    uint32_t* deviceStartPosition)
+    uint32_t *deviceInput,
+    uint32_t *deviceOutput,
+    uint32_t *deviceBitFlagArr,
+    uint32_t *deviceStartPosition)
 {
     // allocate shared byte flag array
     __shared__ uint32_t dataChunk[32][33];
@@ -221,13 +223,13 @@ __global__ void decompressionFusedKernel(
 
     // transfer bit flag array to byte flag array
     uint32_t bitFlag = 0;
-    if(threadIdx.x < 8 && threadIdx.y == 0) 
+    if (threadIdx.x < 8 && threadIdx.y == 0)
     {
         bitFlag = deviceBitFlagArr[bid * 8 + threadIdx.x];
 #pragma unroll 32
-        for(int tmpInd = 0; tmpInd < 32; tmpInd++)
+        for (int tmpInd = 0; tmpInd < 32; tmpInd++)
         {
-            byteFlagArray[threadIdx.x * 32 + tmpInd] = (bitFlag & (1U<<tmpInd)) > 0;
+            byteFlagArray[threadIdx.x * 32 + tmpInd] = (bitFlag & (1U << tmpInd)) > 0;
         }
     }
     __syncthreads();
@@ -275,7 +277,7 @@ __global__ void decompressionFusedKernel(
     }
 
 #ifdef DEBUG
-    if(threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
     {
         printf("decompressed byte flag array:\n");
         for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
@@ -299,7 +301,7 @@ __global__ void decompressionFusedKernel(
 
     // write back shuffled data to shared mem
     int byteFlagInd = tid / 4;
-    if(byteFlagArray[byteFlagInd + 1] != byteFlagArray[byteFlagInd])
+    if (byteFlagArray[byteFlagInd + 1] != byteFlagArray[byteFlagInd])
     {
         dataChunk[threadIdx.x][threadIdx.y] = deviceInput[startPosition + byteFlagArray[byteFlagInd] * 4 + tid % 4];
     }
@@ -318,7 +320,7 @@ __global__ void decompressionFusedKernel(
     __syncthreads();
 
 #ifdef DEBUG
-    if(threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
     {
         printf("decomopressed data:\n");
         for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
@@ -336,52 +338,52 @@ __global__ void decompressionFusedKernel(
 void runFzgpu(std::string fileName, int x, int y, int z, double eb)
 {
     auto inputDimension = dim3(x, y, z);
-    int  inputSize = GetFileSize(fileName);
+    int inputSize = GetFileSize(fileName);
     auto dataTypeLen = int(inputSize / sizeof(float));
 
-    float*    hostInput;
-    float     timeElapsed;
-    uint32_t  offsetSum;
+    float *hostInput;
+    float timeElapsed;
+    uint32_t offsetSum;
 
-    float*    deviceInput;
-    uint16_t* deviceCompressedOutput;
-    uint32_t* deviceBitFlagArr;
-    uint16_t* deviceQuantizationCode;
-    uint32_t* deviceOffsetCounter;
-    uint32_t* deviceStartPosition;
-    uint32_t* deviceCompressedSize;
-    uint16_t* deviceDecompressedQuantizationCode;
-    float*    deviceDecompressedOutput;
+    float *deviceInput;
+    uint16_t *deviceCompressedOutput;
+    uint32_t *deviceBitFlagArr;
+    uint16_t *deviceQuantizationCode;
+    uint32_t *deviceOffsetCounter;
+    uint32_t *deviceStartPosition;
+    uint32_t *deviceCompressedSize;
+    uint16_t *deviceDecompressedQuantizationCode;
+    float *deviceDecompressedOutput;
 
-    bool*     deviceSignNum;
+    bool *deviceSignNum;
 
     std::chrono::time_point<std::chrono::system_clock> compressionStart, compressionEnd;
     std::chrono::time_point<std::chrono::system_clock> decompressionStart, decompressionEnd;
 
-    int  blockSize = 16;
-    auto quantizationCodeByteLen = dataTypeLen * 2;  // quantization code length in unit of bytes
+    int blockSize = 16;
+    auto quantizationCodeByteLen = dataTypeLen * 2; // quantization code length in unit of bytes
     quantizationCodeByteLen = quantizationCodeByteLen % 4096 == 0 ? quantizationCodeByteLen : quantizationCodeByteLen - quantizationCodeByteLen % 4096 + 4096;
     auto paddingDataTypeLen = quantizationCodeByteLen / 2;
     int dataChunkSize = quantizationCodeByteLen % (blockSize * UINT32_BIT_LEN) == 0 ? quantizationCodeByteLen / (blockSize * UINT32_BIT_LEN) : int(quantizationCodeByteLen / (blockSize * UINT32_BIT_LEN)) + 1;
 
     dim3 block(32, 32);
-    dim3 grid(floor(paddingDataTypeLen / 2048));  // divided by 2 is because the file is transformed from uint32 to uint16
+    dim3 grid(floor(paddingDataTypeLen / 2048)); // divided by 2 is because the file is transformed from uint32 to uint16
 
     hostInput = read_binary_to_new_array<float>(fileName, paddingDataTypeLen);
-    float range = *std::max_element(hostInput , hostInput + paddingDataTypeLen) - *std::min_element(hostInput , hostInput + paddingDataTypeLen);
+    float range = *std::max_element(hostInput, hostInput + paddingDataTypeLen) - *std::min_element(hostInput, hostInput + paddingDataTypeLen);
 
-    CHECK_CUDA(cudaMalloc((void**)&deviceInput, sizeof(float) * paddingDataTypeLen));
-    CHECK_CUDA(cudaMalloc((void**)&deviceQuantizationCode, sizeof(uint16_t) * paddingDataTypeLen));
-    CHECK_CUDA(cudaMalloc((void**)&deviceSignNum, sizeof(bool) * paddingDataTypeLen));
-    CHECK_CUDA(cudaMalloc((void**)&deviceCompressedOutput, sizeof(uint16_t) * paddingDataTypeLen));
-    CHECK_CUDA(cudaMalloc((void**)&deviceBitFlagArr, sizeof(uint32_t) * dataChunkSize));
-    CHECK_CUDA(cudaMalloc((void**)&deviceDecompressedQuantizationCode, sizeof(uint16_t) * paddingDataTypeLen));
-    CHECK_CUDA(cudaMalloc((void**)&deviceDecompressedOutput, sizeof(float) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMalloc((void **)&deviceInput, sizeof(float) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMalloc((void **)&deviceQuantizationCode, sizeof(uint16_t) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMalloc((void **)&deviceSignNum, sizeof(bool) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMalloc((void **)&deviceCompressedOutput, sizeof(uint16_t) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMalloc((void **)&deviceBitFlagArr, sizeof(uint32_t) * dataChunkSize));
+    CHECK_CUDA(cudaMalloc((void **)&deviceDecompressedQuantizationCode, sizeof(uint16_t) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMalloc((void **)&deviceDecompressedOutput, sizeof(float) * paddingDataTypeLen));
 
-    CHECK_CUDA(cudaMalloc((void**)&deviceOffsetCounter, sizeof(uint32_t)));
-    CHECK_CUDA(cudaMalloc((void**)&deviceStartPosition, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
-    CHECK_CUDA(cudaMalloc((void**)&deviceCompressedSize, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
-    
+    CHECK_CUDA(cudaMalloc((void **)&deviceOffsetCounter, sizeof(uint32_t)));
+    CHECK_CUDA(cudaMalloc((void **)&deviceStartPosition, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
+    CHECK_CUDA(cudaMalloc((void **)&deviceCompressedSize, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
+
     CHECK_CUDA(cudaMemset(deviceQuantizationCode, 0, sizeof(uint16_t) * paddingDataTypeLen));
     CHECK_CUDA(cudaMemset(deviceBitFlagArr, 0, sizeof(uint32_t) * dataChunkSize));
     CHECK_CUDA(cudaMemset(deviceDecompressedQuantizationCode, 0, sizeof(uint16_t) * paddingDataTypeLen));
@@ -392,8 +394,7 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
     CHECK_CUDA(cudaMemset(deviceDecompressedOutput, 0, sizeof(float) * paddingDataTypeLen));
 
     CHECK_CUDA(cudaMemcpy(deviceInput, hostInput, sizeof(float) * dataTypeLen, cudaMemcpyHostToDevice));
-    
-    
+
     cudaStream_t stream;
     cudaStreamCreate(&stream);
 
@@ -403,7 +404,7 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
     cusz::experimental::launch_construct_LorenzoI_var<float, uint16_t, float>(deviceInput, deviceQuantizationCode, deviceSignNum, inputDimension, eb * range, timeElapsed, stream);
 
     // bitshuffle kernel
-    compressionFusedKernel<<<grid, block>>>((uint32_t*)deviceQuantizationCode, (uint32_t*)deviceCompressedOutput, deviceOffsetCounter, deviceBitFlagArr, deviceStartPosition, deviceCompressedSize);
+    compressionFusedKernel<<<grid, block>>>((uint32_t *)deviceQuantizationCode, (uint32_t *)deviceCompressedOutput, deviceOffsetCounter, deviceBitFlagArr, deviceStartPosition, deviceCompressedSize);
 
     cudaDeviceSynchronize();
     compressionEnd = std::chrono::system_clock::now();
@@ -411,23 +412,23 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
     decompressionStart = std::chrono::system_clock::now();
 
     // de-bitshuffle kernel
-    decompressionFusedKernel<<<grid, block>>>((uint32_t*)deviceCompressedOutput, (uint32_t*)deviceDecompressedQuantizationCode, deviceBitFlagArr, deviceStartPosition);
+    decompressionFusedKernel<<<grid, block>>>((uint32_t *)deviceCompressedOutput, (uint32_t *)deviceDecompressedQuantizationCode, deviceBitFlagArr, deviceStartPosition);
 
     // de-pre-quantization
-    cusz::experimental::launch_reconstruct_LorenzoI_var<float, uint16_t, float>(deviceSignNum, deviceDecompressedQuantizationCode, deviceDecompressedOutput, inputDimension, eb * range, timeElapsed,  stream);
+    cusz::experimental::launch_reconstruct_LorenzoI_var<float, uint16_t, float>(deviceSignNum, deviceDecompressedQuantizationCode, deviceDecompressedOutput, inputDimension, eb * range, timeElapsed, stream);
 
     cudaDeviceSynchronize();
     decompressionEnd = std::chrono::system_clock::now();
 
 #ifdef VERIFICATION
 
-    uint16_t* hostQuantizationCode;
-    hostQuantizationCode = (uint16_t*)malloc(sizeof(uint16_t) * dataTypeLen);
+    uint16_t *hostQuantizationCode;
+    hostQuantizationCode = (uint16_t *)malloc(sizeof(uint16_t) * dataTypeLen);
     CHECK_CUDA(cudaMemcpy(hostQuantizationCode, deviceQuantizationCode, sizeof(uint16_t) * dataTypeLen, cudaMemcpyDeviceToHost));
 
     // bitshuffle verification
-    uint16_t* hostDecompressedQuantizationCode;
-    hostDecompressedQuantizationCode = (uint16_t*)malloc(sizeof(uint16_t) * dataTypeLen);
+    uint16_t *hostDecompressedQuantizationCode;
+    hostDecompressedQuantizationCode = (uint16_t *)malloc(sizeof(uint16_t) * dataTypeLen);
     CHECK_CUDA(cudaMemcpy(hostDecompressedQuantizationCode, deviceDecompressedQuantizationCode, sizeof(uint16_t) * dataTypeLen, cudaMemcpyDeviceToHost));
 
     cudaDeviceSynchronize();
@@ -436,7 +437,7 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
     bool bitshuffleVerify = true;
     for (int tmpIdx = 0; tmpIdx < dataTypeLen; tmpIdx++)
     {
-        if(hostQuantizationCode[tmpIdx] != hostDecompressedQuantizationCode[tmpIdx])
+        if (hostQuantizationCode[tmpIdx] != hostDecompressedQuantizationCode[tmpIdx])
         {
             printf("data type len: %u\n", dataTypeLen);
             printf("verification failed at index: %d\noriginal quantization code: %u\ndecompressed quantization code: %u\n", tmpIdx, hostQuantizationCode[tmpIdx], hostDecompressedQuantizationCode[tmpIdx]);
@@ -449,19 +450,19 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
     free(hostDecompressedQuantizationCode);
 
     // pre-quantization verification
-    float* hostDecompressedOutput;
-    hostDecompressedOutput = (float*)malloc(sizeof(float) * dataTypeLen);
+    float *hostDecompressedOutput;
+    hostDecompressedOutput = (float *)malloc(sizeof(float) * dataTypeLen);
     CHECK_CUDA(cudaMemcpy(hostDecompressedOutput, deviceDecompressedOutput, sizeof(float) * dataTypeLen, cudaMemcpyDeviceToHost));
 
     cudaDeviceSynchronize();
 
     bool prequantizationVerify = true;
-    if(bitshuffleVerify)
+    if (bitshuffleVerify)
     {
         printf("begin pre-quantization verification\n");
         for (int tmpIdx = 0; tmpIdx < dataTypeLen; tmpIdx++)
         {
-            if(std::abs(hostInput[tmpIdx] - hostDecompressedOutput[tmpIdx]) > float(eb * 1.01 * range))
+            if (std::abs(hostInput[tmpIdx] - hostDecompressedOutput[tmpIdx]) > float(eb * 1.01 * range))
             {
                 printf("verification failed at index: %d\noriginal data: %f\ndecompressed data: %f\n", tmpIdx, hostInput[tmpIdx], hostDecompressedOutput[tmpIdx]);
                 printf("error is: %f, while error bound is: %f\n", std::abs(hostInput[tmpIdx] - hostDecompressedOutput[tmpIdx]), float(eb * range));
@@ -472,12 +473,12 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
     }
 
     free(hostDecompressedOutput);
-    
+
     // print verification result
-    if(bitshuffleVerify)
+    if (bitshuffleVerify)
     {
         printf("bitshuffle verification succeed!\n");
-        if(prequantizationVerify)
+        if (prequantizationVerify)
         {
             printf("pre-quantization verification succeed!\n");
         }
@@ -500,12 +501,12 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
 
     std::chrono::duration<double> compressionTime = compressionEnd - compressionStart;
     std::chrono::duration<double> decompressionTime = decompressionEnd - decompressionStart;
-    
+
     std::cout << "compression e2e time: " << compressionTime.count() << " s\n";
-    std::cout << "compression e2e throughput: " << float(inputSize) / 1024 / 1024 /1024 / compressionTime.count() << " GB/s\n";
+    std::cout << "compression e2e throughput: " << float(inputSize) / 1024 / 1024 / 1024 / compressionTime.count() << " GB/s\n";
 
     std::cout << "decompression e2e time: " << decompressionTime.count() << " s\n";
-    std::cout << "decompression e2e throughput: " << float(inputSize) / 1024 / 1024 /1024 / decompressionTime.count() << " GB/s\n";
+    std::cout << "decompression e2e throughput: " << float(inputSize) / 1024 / 1024 / 1024 / decompressionTime.count() << " GB/s\n";
 
     CHECK_CUDA(cudaFree(deviceQuantizationCode));
     CHECK_CUDA(cudaFree(deviceInput));
@@ -526,14 +527,14 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
     return;
 }
 
-int main(int argc, char* argv[])
+int main(int argc, char *argv[])
 {
     using T = float;
     std::string fileName;
-    fileName  = std::string(argv[1]);
-    int    x  = std::stoi(argv[2]);
-    int    y  = std::stoi(argv[3]);
-    int    z  = std::stoi(argv[4]);
+    fileName = std::string(argv[1]);
+    int x = std::stoi(argv[2]);
+    int y = std::stoi(argv[3]);
+    int z = std::stoi(argv[4]);
     double eb = std::stod(argv[5]);
 
     runFzgpu(fileName, x, y, z, eb);

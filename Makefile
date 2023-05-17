@@ -1,6 +1,6 @@
 main: src/fz.cu
 	nvcc src/claunch_cuda.cu -Iinclude --extended-lambda -c
-	nvcc src/fz.cu claunch_cuda.o -o fz-gpu
+	nvcc -Xcompiler -fPIC -shared -o fz-gpu.so src/fz.cu
 
 clean:
-	rm -rf fz-gpu claunch_cuda.o
+	rm -rf fz-gpu.so claunch_cuda.o
