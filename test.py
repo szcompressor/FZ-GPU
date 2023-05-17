@@ -15,7 +15,7 @@ def pfz_round_trip():
     func.argtypes = [POINTER(c_float), POINTER(c_float), c_int, c_int, c_int, c_int, c_double]
     return func
 
-def run_pycusz(input, output, file_size, x, y, z, error_bound):
+def run_pfz(input, output, file_size, x, y, z, error_bound):
     # get input GPU pointer
     input_gpu_ptr = input.data_ptr()
     input_gpu_ptr = cast(input_gpu_ptr, ctypes.POINTER(c_float))
@@ -28,4 +28,4 @@ def run_pycusz(input, output, file_size, x, y, z, error_bound):
     __pfz(input_gpu_ptr, output_gpu_ptr, c_int(file_size), c_int(x), c_int(y), c_int(z), c_double(error_bound))
 
 if __name__ == '__main__':
-    run_pycusz(input_tensor_gpu, output_tensor_gpu, 1024 * 1024 * 4, 1024, 1024, 1, 1e-3)
+    run_pfz(input_tensor_gpu, output_tensor_gpu, 1024 * 1024 * 4, 1024, 1024, 1, 1e-3)
