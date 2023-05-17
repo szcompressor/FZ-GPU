@@ -13,9 +13,70 @@
 #include "../include/utils/cuda_err.cuh"
 
 #define UINT32_BIT_LEN 32
-// #define VERIFICATION
+#define VERIFICATION
 // #define DEBUG
 
+template <typename T>
+void verify_data(T* xdata, T* odata, size_t len)
+{
+    double max_odata = odata[0], min_odata = odata[0];
+    double max_xdata = xdata[0], min_xdata = xdata[0];
+    double max_abserr = max_abserr = fabs(xdata[0] - odata[0]);
+
+    double sum_0 = 0, sum_x = 0;
+    for (size_t i = 0; i < len; i++) sum_0 += odata[i], sum_x += xdata[i];
+
+    double mean_odata = sum_0 / len, mean_xdata = sum_x / len;
+    double sum_var_odata = 0, sum_var_xdata = 0, sum_err2 = 0, sum_corr = 0, rel_abserr = 0;
+
+    double max_pwrrel_abserr = 0;
+    size_t max_abserr_index  = 0;
+    for (size_t i = 0; i < len; i++) {
+        max_odata = max_odata < odata[i] ? odata[i] : max_odata;
+        min_odata = min_odata > odata[i] ? odata[i] : min_odata;
+
+        max_xdata = max_xdata < odata[i] ? odata[i] : max_xdata;
+        min_xdata = min_xdata > xdata[i] ? xdata[i] : min_xdata;
+
+        float abserr = fabs(xdata[i] - odata[i]);
+        if (odata[i] != 0) {
+            rel_abserr        = abserr / fabs(odata[i]);
+            max_pwrrel_abserr = max_pwrrel_abserr < rel_abserr ? rel_abserr : max_pwrrel_abserr;
+        }
+        max_abserr_index = max_abserr < abserr ? i : max_abserr_index;
+        max_abserr       = max_abserr < abserr ? abserr : max_abserr;
+        sum_corr += (odata[i] - mean_odata) * (xdata[i] - mean_xdata);
+        sum_var_odata += (odata[i] - mean_odata) * (odata[i] - mean_odata);
+        sum_var_xdata += (xdata[i] - mean_xdata) * (xdata[i] - mean_xdata);
+        sum_err2 += abserr * abserr;
+    }
+    double std_odata = sqrt(sum_var_odata / len);
+    double std_xdata = sqrt(sum_var_xdata / len);
+    double ee        = sum_corr / len;
+
+    // s->len = len;
+
+    // s->odata.max = max_odata;
+    // s->odata.min = min_odata;
+    double inputRange = max_odata - min_odata;
+    // s->odata.std = std_odata;
+
+    // s->xdata.max = max_xdata;
+    // s->xdata.min = min_xdata;
+    // s->xdata.rng = max_xdata - min_xdata;
+    // s->xdata.std = std_xdata;
+
+    // s->max_err.idx    = max_abserr_index;
+    // s->max_err.abs    = max_abserr;
+    // s->max_err.rel    = max_abserr / s->odata.rng;
+    // s->max_err.pwrrel = max_pwrrel_abserr;
+
+    // s->reduced.coeff = ee / std_odata / std_xdata;
+    double mse   = sum_err2 / len;
+    // s->reduced.NRMSE = sqrt(s->reduced.MSE) / s->odata.rng;
+    double psnr  = 20 * log10(inputRange) - 10 * log10(mse);
+    std::cout << "PSNR: " << psnr << std::endl;
+}
 
 long GetFileSize(std::string fidataTypeLename)
 {
@@ -368,7 +429,7 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
     dim3 grid(floor(paddingDataTypeLen / 2048));  // divided by 2 is because the file is transformed from uint32 to uint16
 
     hostInput = read_binary_to_new_array<float>(fileName, paddingDataTypeLen);
-    float range = *std::max_element(hostInput , hostInput + paddingDataTypeLen) - *std::min_element(hostInput , hostInput + paddingDataTypeLen);
+    double range = *std::max_element(hostInput , hostInput + paddingDataTypeLen) - *std::min_element(hostInput , hostInput + paddingDataTypeLen);
 
     CHECK_CUDA(cudaMalloc((void**)&deviceInput, sizeof(float) * paddingDataTypeLen));
     CHECK_CUDA(cudaMalloc((void**)&deviceQuantizationCode, sizeof(uint16_t) * paddingDataTypeLen));
@@ -470,6 +531,8 @@ void runFzgpu(std::string fileName, int x, int y, int z, double eb)
             }
         }
     }
+
+    verify_data<float>(hostDecompressedOutput, hostInput, dataTypeLen);
 
     free(hostDecompressedOutput);
     
