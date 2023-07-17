@@ -50,7 +50,7 @@ void write_array_to_binary(const std::string &fname, T *const _a, size_t const d
 
 __global__ void compressionFusedKernel(
     const uint32_t *__restrict__ in,
-    uint32_t *__restrict__ out,
+    uint32_t *out,
     uint32_t *deviceOffsetCounter,
     uint32_t *deviceBitFlagArr,
     uint32_t *deviceStartPosition,
@@ -335,25 +335,22 @@ __global__ void decompressionFusedKernel(
     deviceOutput[tid + bid * blockDim.x * blockDim.y] = dataChunk[threadIdx.y][threadIdx.x];
 }
 
-void runFzgpu(float *deviceInput, float *deviceDecompressedOutput, int inputSize, int x, int y, int z, double eb)
+void runFzgpu(float *deviceInput, uint8_t *deviceCompressed, float *deviceDecompressedOutput, int inputSize, int x, int y, int z, double eb)
 {
     auto inputDimension = dim3(x, y, z);
-    // int inputSize = GetFileSize(fileName);
     auto dataTypeLen = int(inputSize / sizeof(float));
 
-    // float *hostInput;
     float timeElapsed;
     uint32_t offsetSum;
 
-    // float *deviceInput;
     uint16_t *deviceCompressedOutput;
-    uint32_t *deviceBitFlagArr;
     uint16_t *deviceQuantizationCode;
+    uint16_t *deviceDecompressedQuantizationCode;
+    
+    uint32_t *deviceBitFlagArr;
     uint32_t *deviceOffsetCounter;
     uint32_t *deviceStartPosition;
     uint32_t *deviceCompressedSize;
-    uint16_t *deviceDecompressedQuantizationCode;
-    // float *deviceDecompressedOutput;
 
     bool *deviceSignNum;
 
@@ -364,7 +361,7 @@ void runFzgpu(float *deviceInput, float *deviceDecompressedOutput, int inputSize
     auto quantizationCodeByteLen = dataTypeLen * 2; // quantization code length in unit of bytes
     quantizationCodeByteLen = quantizationCodeByteLen % 4096 == 0 ? quantizationCodeByteLen : quantizationCodeByteLen - quantizationCodeByteLen % 4096 + 4096;
     auto paddingDataTypeLen = quantizationCodeByteLen / 2;
-    int dataChunkSize = quantizationCodeByteLen % (blockSize * UINT32_BIT_LEN) == 0 ? quantizationCodeByteLen / (blockSize * UINT32_BIT_LEN) : int(quantizationCodeByteLen / (blockSize * UINT32_BIT_LEN)) + 1;
+    int bitFlagArrSize = quantizationCodeByteLen % (blockSize * UINT32_BIT_LEN) == 0 ? quantizationCodeByteLen / (blockSize * UINT32_BIT_LEN) : int(quantizationCodeByteLen / (blockSize * UINT32_BIT_LEN)) + 1;
 
     dim3 block(32, 32);
     dim3 grid(floor(paddingDataTypeLen / 2048)); // divided by 2 is because the file is transformed from uint32 to uint16
@@ -375,17 +372,25 @@ void runFzgpu(float *deviceInput, float *deviceDecompressedOutput, int inputSize
     // CHECK_CUDA(cudaMalloc((void **)&deviceInput, sizeof(float) * paddingDataTypeLen));
     CHECK_CUDA(cudaMalloc((void **)&deviceQuantizationCode, sizeof(uint16_t) * paddingDataTypeLen));
     CHECK_CUDA(cudaMalloc((void **)&deviceSignNum, sizeof(bool) * paddingDataTypeLen));
-    CHECK_CUDA(cudaMalloc((void **)&deviceCompressedOutput, sizeof(uint16_t) * paddingDataTypeLen));
-    CHECK_CUDA(cudaMalloc((void **)&deviceBitFlagArr, sizeof(uint32_t) * dataChunkSize));
     CHECK_CUDA(cudaMalloc((void **)&deviceDecompressedQuantizationCode, sizeof(uint16_t) * paddingDataTypeLen));
     // CHECK_CUDA(cudaMalloc((void **)&deviceDecompressedOutput, sizeof(float) * paddingDataTypeLen));
 
     CHECK_CUDA(cudaMalloc((void **)&deviceOffsetCounter, sizeof(uint32_t)));
-    CHECK_CUDA(cudaMalloc((void **)&deviceStartPosition, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
     CHECK_CUDA(cudaMalloc((void **)&deviceCompressedSize, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
 
+    int offsetCalculator = 0;
+    deviceCompressedOutput = (uint16_t*) (deviceCompressed + offsetCalculator);
+    offsetCalculator += sizeof(uint16_t) * paddingDataTypeLen;
+    deviceBitFlagArr = (uint32_t*) (deviceCompressed + offsetCalculator);
+    offsetCalculator += sizeof(uint32_t) * bitFlagArrSize;
+    deviceStartPosition = (uint32_t*) (deviceCompressed + offsetCalculator);
+    
+    // CHECK_CUDA(cudaMalloc((void **)&deviceCompressedOutput, sizeof(uint16_t) * paddingDataTypeLen));
+    // CHECK_CUDA(cudaMalloc((void **)&deviceBitFlagArr, sizeof(uint32_t) * bitFlagArrSize));
+    // CHECK_CUDA(cudaMalloc((void **)&deviceStartPosition, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
+
     CHECK_CUDA(cudaMemset(deviceQuantizationCode, 0, sizeof(uint16_t) * paddingDataTypeLen));
-    CHECK_CUDA(cudaMemset(deviceBitFlagArr, 0, sizeof(uint32_t) * dataChunkSize));
+    CHECK_CUDA(cudaMemset(deviceBitFlagArr, 0, sizeof(uint32_t) * bitFlagArrSize));
     CHECK_CUDA(cudaMemset(deviceDecompressedQuantizationCode, 0, sizeof(uint16_t) * paddingDataTypeLen));
 
     CHECK_CUDA(cudaMemset(deviceOffsetCounter, 0, sizeof(uint32_t)));
@@ -496,8 +501,8 @@ void runFzgpu(float *deviceInput, float *deviceDecompressedOutput, int inputSize
 
     CHECK_CUDA(cudaMemcpy(&offsetSum, deviceOffsetCounter, sizeof(uint32_t), cudaMemcpyDeviceToHost));
     printf("original size: %d\n", inputSize);
-    printf("compressed size: %ld\n", sizeof(uint32_t) * dataChunkSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * int(quantizationCodeByteLen / 4096));
-    printf("compression ratio: %f\n", float(inputSize) / float(sizeof(uint32_t) * dataChunkSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
+    printf("compressed size: %ld\n", sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * int(quantizationCodeByteLen / 4096));
+    printf("compression ratio: %f\n", float(inputSize) / float(sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
 
     std::chrono::duration<double> compressionTime = compressionEnd - compressionStart;
     std::chrono::duration<double> decompressionTime = decompressionEnd - decompressionStart;
@@ -529,9 +534,9 @@ void runFzgpu(float *deviceInput, float *deviceDecompressedOutput, int inputSize
 
 extern "C"
 {
-    void fzRoundTrip(float *deviceInput, float *deviceDecompressedOutput, int inputSize, int x, int y, int z, double eb)
+    void fzRoundTrip(float *deviceInput, uint8_t *deviceCompressed, float *deviceDecompressedOutput, int inputSize, int x, int y, int z, double eb)
     {
-        runFzgpu(deviceInput, deviceDecompressedOutput, inputSize, x, y, z, eb);
+        runFzgpu(deviceInput, deviceCompressed, deviceDecompressedOutput, inputSize, x, y, z, eb);
         return;
     }
 }
