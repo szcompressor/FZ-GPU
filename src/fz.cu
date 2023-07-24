@@ -337,7 +337,7 @@ __global__ void decompressionFusedKernel(
 
 // int inputSize, int x, int y, int z, double eb
 
-void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int inputSize, int x, int y, int z, float eb)
+void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePtr, int inputSize, int x, int y, int z, float eb)
 {
     // defination of some basic variables
     auto inputDimension = dim3(x, y, z);
@@ -349,6 +349,7 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int inputSize, in
     uint16_t *deviceCompressedOutput;
     uint32_t *deviceBitFlagArr;
     uint32_t *deviceStartPosition;
+    uint8_t *deviceCompressedStartPosition = deviceCompressed + sizeof(int) * 5;
 
     bool *deviceSignNum;
     uint16_t *deviceQuantizationCode;
@@ -374,13 +375,20 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int inputSize, in
     CHECK_CUDA(cudaMalloc((void **)&deviceOffsetCounter, sizeof(uint32_t)));
     CHECK_CUDA(cudaMalloc((void **)&deviceCompressedSize, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
 
+    // cuda copy some info to compressed data
+    CHECK_CUDA(cudaMemcpy(deviceCompressed, &inputSize, sizeof(int), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(deviceCompressed + sizeof(int), &x, sizeof(int), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(deviceCompressed + sizeof(int) * 1, &y, sizeof(int), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(deviceCompressed + sizeof(int) * 2, &z, sizeof(int), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(deviceCompressed + sizeof(int) * 3, &eb, sizeof(int), cudaMemcpyHostToDevice));
+
     // get the differents by the calculated offset
     int offsetCalculator = 0;
-    deviceCompressedOutput = (uint16_t *)(deviceCompressed + offsetCalculator);
+    deviceCompressedOutput = (uint16_t *)(deviceCompressedStartPosition + offsetCalculator);
     offsetCalculator += sizeof(uint16_t) * paddingDataTypeLen;
-    deviceBitFlagArr = (uint32_t *)(deviceCompressed + offsetCalculator);
+    deviceBitFlagArr = (uint32_t *)(deviceCompressedStartPosition + offsetCalculator);
     offsetCalculator += sizeof(uint32_t) * bitFlagArrSize;
-    deviceStartPosition = (uint32_t *)(deviceCompressed + offsetCalculator);
+    deviceStartPosition = (uint32_t *)(deviceCompressedStartPosition + offsetCalculator);
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
@@ -474,6 +482,7 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int inputSize, in
     printf("original size: %d\n", inputSize);
     printf("compressed size: %ld\n", sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * int(quantizationCodeByteLen / 4096));
     printf("compression ratio: %f\n", float(inputSize) / float(sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
+    *outputSizePtr = sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * int(quantizationCodeByteLen / 4096) + 5;
 
     std::chrono::duration<double> compressionTime = compressionEnd - compressionStart;
 
@@ -636,15 +645,15 @@ void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput, in
     return;
 }
 
-void fzCompressSpecifiedDevice(float **deviceInput,
-                               int gpuIndex,
-                               int *inputSizeArr,
-                               int arrSize,
-                               int worldSize,
-                               float *errorBoundArr,
-                               int **dimensionInfoArr,
-                               uint8_t *deviceCompressed,
-                               int **compressedSizeArr)
+void fzCompressSpecifyDevice(float **deviceInput,
+                             int gpuIndex,
+                             int *inputSizeArr,
+                             int arrSize,
+                             int worldSize,
+                             float *errorBoundArr,
+                             int **dimensionInfoArr,
+                             uint8_t *deviceCompressed,
+                             int **compressedSizeArr)
 {
     CHECK_CUDA(cudaSetDevice(gpuIndex));
     int chunkInputSizeArr[arrSize] = {0};
@@ -657,6 +666,7 @@ void fzCompressSpecifiedDevice(float **deviceInput,
     int x, y, z;
     float eb;
     int outputSizeCounter = 0;
+    int outputSize = 0;
     for (int i = 0; i < arrSize; i++)
     {
         for (int j = 0; j < worldSize; j++)
@@ -669,8 +679,8 @@ void fzCompressSpecifiedDevice(float **deviceInput,
 
             fzCompress(deviceInput[i] + chunkInputSizeArr[i] * j,
                        deviceCompressed + outputSizeCounter,
+                       &outputSize,
                        actualInputSize,
-                       outputSize,
                        x, y, z, eb);
 
             outputSizeCounter += outputSize;
@@ -692,7 +702,7 @@ void fzCompressSpecifiedDevice(float **deviceInput,
 extern "C"
 {
     void pfzCompress(float **deviceInput,
-                     int gpuIndex,
+                     int *gpuIndex,
                      int *inputSizeArr,
                      int arrSize,
                      int worldSize,
@@ -701,21 +711,34 @@ extern "C"
                      uint8_t *deviceCompressed,
                      int **compressedSizeArr)
     {
-        //find the strat position in the input tensor pointers array
-        
-        fzCompressSpecifiedDevice(deviceInput,
-                                  gpuIndex,
-                                  inputSizeArr,
-                                  arrSize,
-                                  worldSize,
-                                  errorBoundArr,
-                                  dimensionInfoArr,
-                                  deviceCompressed,
-                                  compressedSizeArr);
+        // find the strat position in the input tensor pointers array
+        int lind = 0, rind = 0;
+        while (rind < arrSize)
+        {
+            while (gpuIndex[lind] == gpuIndex[rind] && rind < arrSize)
+            {
+                rind++;
+            }
+
+            fzCompressSpecifyDevice(deviceInput + rind,
+                                    gpuIndex[lind],
+                                    inputSizeArr,
+                                    rind - lind,
+                                    worldSize,
+                                    errorBoundArr,
+                                    dimensionInfoArr,
+                                    deviceCompressed,
+                                    compressedSizeArr);
+            lind = rind;
+        }
 
         return;
     }
-    void pfzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput, int inputSize, int x, int y, int z, float eb)
+    
+    void pfzDecompress(uint8_t *deviceCompressed,
+                       float *deviceDecompressedOutput,
+                       int inputSize,
+                       int x, int y, int z, float eb)
     {
         fzDecompress(deviceCompressed, deviceDecompressedOutput, inputSize, x, y, z, eb);
         return;
