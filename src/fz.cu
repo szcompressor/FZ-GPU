@@ -1,13 +1,13 @@
+#include <algorithm>
+#include <chrono>
+#include <cub/cub.cuh>
 #include <cuda_runtime.h>
 #include <dirent.h>
+#include <fstream>
+#include <iostream>
 #include <stdint.h>
 #include <sys/stat.h>
 #include <thrust/copy.h>
-#include <chrono>
-#include <cub/cub.cuh>
-#include <fstream>
-#include <iostream>
-#include <algorithm>
 
 #include "../include/kernel/lorenzo_var.cuh"
 #include "../include/utils/cuda_err.cuh"
@@ -349,7 +349,8 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePt
     uint16_t *deviceCompressedOutput;
     uint32_t *deviceBitFlagArr;
     uint32_t *deviceStartPosition;
-    uint8_t *deviceCompressedStartPosition = deviceCompressed + sizeof(int) * 5;
+    uint8_t *deviceCompressedStartPosition;
+    deviceCompressedStartPosition = deviceCompressed + sizeof(int) * 5;
 
     bool *deviceSignNum;
     uint16_t *deviceQuantizationCode;
@@ -500,28 +501,36 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePt
     return;
 }
 
-void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput, int inputSize, int x, int y, int z, float eb)
+void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput, int *decompressedSizePtr)
 {
+    // define the input info variables
+    int inputSize = 0;
+    int x = 0;
+    int y = 0;
+    int z = 0;
+    float eb = 0;
+
     // copy the input information from the GPU global memory
-    CHECK_CUDA(cudaMemcpy(&inputSize, deviceInput, sizeof(int), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(&x, deviceInput + 1, sizeof(int), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(&y, deviceInput + 2, sizeof(int), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(&z, deviceInput + 3, sizeof(int), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(&eb, deviceInput + 4, sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(&inputSize, deviceCompressed, sizeof(int), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(&x, deviceCompressed + 1, sizeof(int), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(&y, deviceCompressed + 2, sizeof(int), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(&z, deviceCompressed + 3, sizeof(int), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(&eb, deviceCompressed + 4, sizeof(float), cudaMemcpyDeviceToHost));
+
+    *decompressedSizePtr = inputSize;
+    uint8_t *deviceCompressedStartPosition;
+    deviceCompressedStartPosition = deviceCompressed + sizeof(int) * 5;
 
     auto inputDimension = dim3(x, y, z);
     auto dataTypeLen = int(inputSize / sizeof(float));
 
     float timeElapsed;
 
-    uint16_t *deviceCompressedOutput;
-    uint16_t *deviceQuantizationCode;
     uint16_t *deviceDecompressedQuantizationCode;
 
+    uint16_t *deviceCompressedOutput;
     uint32_t *deviceBitFlagArr;
-    uint32_t *deviceOffsetCounter;
     uint32_t *deviceStartPosition;
-    uint32_t *deviceCompressedSize;
 
     bool *deviceSignNum;
 
@@ -538,7 +547,15 @@ void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput, in
 
     CHECK_CUDA(cudaMalloc((void **)&deviceDecompressedQuantizationCode, sizeof(uint16_t) * paddingDataTypeLen));
 
-    CHECK_CUDA(cudaMemset(deviceDecompressedQuantizationCode, 0, sizeof(uint16_t) * paddingDataTypeLen));
+    // get the differents by the calculated offset
+    int offsetCalculator = 0;
+    deviceCompressedOutput = (uint16_t *)(deviceCompressedStartPosition + offsetCalculator);
+    offsetCalculator += sizeof(uint16_t) * paddingDataTypeLen;
+    deviceBitFlagArr = (uint32_t *)(deviceCompressedStartPosition + offsetCalculator);
+    offsetCalculator += sizeof(uint32_t) * bitFlagArrSize;
+    deviceStartPosition = (uint32_t *)(deviceCompressedStartPosition + offsetCalculator);
+
+    // CHECK_CUDA(cudaMemset(deviceDecompressedQuantizationCode, 0, sizeof(uint16_t) * paddingDataTypeLen));
 
     CHECK_CUDA(cudaMemset(deviceStartPosition, 0, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
 
@@ -588,7 +605,8 @@ void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput, in
     // pre-quantization verification
     float *hostDecompressedOutput;
     hostDecompressedOutput = (float *)malloc(sizeof(float) * dataTypeLen);
-    CHECK_CUDA(cudaMemcpy(hostDecompressedOutput, deviceDecompressedOutput, sizeof(float) * dataTypeLen, cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(hostDecompressedOutput, deviceDecompressedOutput,
+                          sizeof(float) * dataTypeLen, cudaMemcpyDeviceToHost));
 
     cudaDeviceSynchronize();
 
@@ -684,6 +702,7 @@ void fzCompressSpecifyDevice(float **deviceInput,
                        x, y, z, eb);
 
             outputSizeCounter += outputSize;
+            compressedSizeArr[i][j] = outputSize;
         }
     }
 
@@ -728,19 +747,34 @@ extern "C"
                                     errorBoundArr,
                                     dimensionInfoArr,
                                     deviceCompressed,
-                                    compressedSizeArr);
+                                    compressedSizeArr + rind);
             lind = rind;
         }
 
         return;
     }
-    
-    void pfzDecompress(uint8_t *deviceCompressed,
-                       float *deviceDecompressedOutput,
-                       int inputSize,
-                       int x, int y, int z, float eb)
+
+    void pfzDecompress(uint8_t **deviceCompressed,
+                       int **offsetArr,
+                       int *gpuIndexArr,
+                       int arrSize,
+                       int worldSize,
+                       float **deviceDecompressedOutput)
     {
-        fzDecompress(deviceCompressed, deviceDecompressedOutput, inputSize, x, y, z, eb);
+        for (int i = 0; i < arrSize; i++)
+        {
+            int decompressedSize = 0;
+            int decompressedOffsetCountet = 0;
+            CHECK_CUDA(cudaSetDevice(gpuIndexArr[i]));
+            for (int j = 0; j < arrSize; j++)
+            {
+                fzDecompress(deviceCompressed[i] + offsetArr[i][j],
+                             deviceDecompressedOutput[i] + decompressedOffsetCounter,
+                             &decompressedSize);
+                decompressedOffsetCounter += decompressedSize;
+            }
+        }
+
         return;
     }
 }
