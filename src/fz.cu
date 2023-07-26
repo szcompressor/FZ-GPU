@@ -545,6 +545,7 @@ void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput)
     dim3 grid(floor(paddingDataTypeLen / 2048)); // divided by 2 is because the file is transformed from uint32 to uint16
 
     CHECK_CUDA(cudaMalloc((void **)&deviceDecompressedQuantizationCode, sizeof(uint16_t) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMalloc((void **)&deviceSignNum, sizeof(bool) * paddingDataTypeLen));
 
     // get the differents by the calculated offset
     int offsetCalculator = 0;
@@ -654,6 +655,7 @@ void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput)
 
     CHECK_CUDA(cudaFree(deviceStartPosition));
     CHECK_CUDA(cudaFree(deviceDecompressedQuantizationCode));
+    CHECK_CUDA(cudaFree(deviceSignNum));
 
     cudaStreamDestroy(stream);
 
