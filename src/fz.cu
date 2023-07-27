@@ -406,13 +406,13 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePt
     CHECK_CUDA(cudaMemcpy(&offsetSum, deviceOffsetCounter, sizeof(uint32_t), cudaMemcpyDeviceToHost));
     printf("original size: %d\n", inputSize);
     printf("compressed size: %ld\n", sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * int(quantizationCodeByteLen / 4096));
-    printf("compression ratio: %f\n", float(inputSize) / float(sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
+    printf("compression ratio: %f\n", float(inputSize * sizeof(float)) / float(sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
     *outputSizePtr = sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * int(quantizationCodeByteLen / 4096) + 5 * sizeof(int);
 
     std::chrono::duration<double> compressionTime = compressionEnd - compressionStart;
 
     std::cout << "compression e2e time: " << compressionTime.count() << " s\n";
-    std::cout << "compression e2e throughput: " << float(inputSize) / 1024 / 1024 / 1024 / compressionTime.count() << " GB/s\n";
+    std::cout << "compression e2e throughput: " << float(inputSize * sizeof(float)) / 1024 / 1024 / 1024 / compressionTime.count() << " GB/s\n";
 
     CHECK_CUDA(cudaFree(deviceQuantizationCode));
     CHECK_CUDA(cudaFree(deviceSignNum));
@@ -436,16 +436,16 @@ void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput)
 
     // copy the input information from the GPU global memory
     CHECK_CUDA(cudaMemcpy(&inputSize, deviceCompressed, sizeof(int), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(&x, deviceCompressed + 1, sizeof(int), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(&y, deviceCompressed + 2, sizeof(int), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(&z, deviceCompressed + 3, sizeof(int), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(&eb, deviceCompressed + 4, sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(&x, deviceCompressed + sizeof(int), sizeof(int), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(&y, deviceCompressed + 2 * sizeof(int), sizeof(int), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(&z, deviceCompressed + 3 * sizeof(int), sizeof(int), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(&eb, deviceCompressed + 4 * sizeof(int), sizeof(float), cudaMemcpyDeviceToHost));
 
     uint8_t *deviceCompressedStartPosition;
     deviceCompressedStartPosition = deviceCompressed + sizeof(int) * 5;
 
     auto inputDimension = dim3(x, y, z);
-    auto dataTypeLen = int(inputSize / sizeof(float));
+    auto dataTypeLen = inputSize;
 
     float timeElapsed;
 
@@ -473,15 +473,11 @@ void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput)
 
     // get the differents by the calculated offset
     int offsetCalculator = 0;
-    deviceCompressedOutput = (uint16_t *)(deviceCompressedStartPosition + offsetCalculator);
-    offsetCalculator += sizeof(uint16_t) * paddingDataTypeLen;
     deviceBitFlagArr = (uint32_t *)(deviceCompressedStartPosition + offsetCalculator);
     offsetCalculator += sizeof(uint32_t) * bitFlagArrSize;
     deviceStartPosition = (uint32_t *)(deviceCompressedStartPosition + offsetCalculator);
-
-    // CHECK_CUDA(cudaMemset(deviceDecompressedQuantizationCode, 0, sizeof(uint16_t) * paddingDataTypeLen));
-
-    CHECK_CUDA(cudaMemset(deviceStartPosition, 0, sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
+    offsetCalculator += sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096);
+    deviceCompressedOutput = (uint16_t *)(deviceCompressedStartPosition + offsetCalculator);
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
@@ -500,15 +496,12 @@ void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput)
     std::chrono::duration<double> decompressionTime = decompressionEnd - decompressionStart;
 
     std::cout << "decompression e2e time: " << decompressionTime.count() << " s\n";
-    std::cout << "decompression e2e throughput: " << float(inputSize) / 1024 / 1024 / 1024 / decompressionTime.count() << " GB/s\n";
+    std::cout << "decompression e2e throughput: " << float(inputSize * sizeof(float)) / 1024 / 1024 / 1024 / decompressionTime.count() << " GB/s\n";
 
-    CHECK_CUDA(cudaFree(deviceStartPosition));
     CHECK_CUDA(cudaFree(deviceDecompressedQuantizationCode));
     CHECK_CUDA(cudaFree(deviceSignNum));
 
     cudaStreamDestroy(stream);
-
-    // delete[] hostInput;
 
     return;
 }
