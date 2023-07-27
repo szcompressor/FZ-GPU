@@ -335,13 +335,11 @@ __global__ void decompressionFusedKernel(
     deviceOutput[tid + bid * blockDim.x * blockDim.y] = dataChunk[threadIdx.y][threadIdx.x];
 }
 
-// int inputSize, int x, int y, int z, double eb
-
 void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePtr, int inputSize, int x, int y, int z, float eb)
 {
     // defination of some basic variables
     auto inputDimension = dim3(x, y, z);
-    auto dataTypeLen = int(inputSize / sizeof(float));
+    auto dataTypeLen = inputSize;
     float timeElapsed;
     uint32_t offsetSum;
 
@@ -379,17 +377,17 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePt
     // cuda copy some info to compressed data
     CHECK_CUDA(cudaMemcpy(deviceCompressed, &inputSize, sizeof(int), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(deviceCompressed + sizeof(int), &x, sizeof(int), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(deviceCompressed + sizeof(int) * 1, &y, sizeof(int), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(deviceCompressed + sizeof(int) * 2, &z, sizeof(int), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(deviceCompressed + sizeof(int) * 3, &eb, sizeof(int), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(deviceCompressed + sizeof(int) * 2, &y, sizeof(int), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(deviceCompressed + sizeof(int) * 3, &z, sizeof(int), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(deviceCompressed + sizeof(int) * 4, &eb, sizeof(float), cudaMemcpyHostToDevice));
 
     // get the differents by the calculated offset
     int offsetCalculator = 0;
-    deviceCompressedOutput = (uint16_t *)(deviceCompressedStartPosition + offsetCalculator);
-    offsetCalculator += sizeof(uint16_t) * paddingDataTypeLen;
     deviceBitFlagArr = (uint32_t *)(deviceCompressedStartPosition + offsetCalculator);
     offsetCalculator += sizeof(uint32_t) * bitFlagArrSize;
     deviceStartPosition = (uint32_t *)(deviceCompressedStartPosition + offsetCalculator);
+    offsetCalculator += sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096);
+    deviceCompressedOutput = (uint16_t *)(deviceCompressedStartPosition + offsetCalculator);
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
@@ -405,85 +403,11 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePt
     cudaDeviceSynchronize();
     compressionEnd = std::chrono::system_clock::now();
 
-#ifdef VERIFICATION
-
-    uint16_t *hostQuantizationCode;
-    hostQuantizationCode = (uint16_t *)malloc(sizeof(uint16_t) * dataTypeLen);
-    CHECK_CUDA(cudaMemcpy(hostQuantizationCode, deviceQuantizationCode, sizeof(uint16_t) * dataTypeLen, cudaMemcpyDeviceToHost));
-
-    // bitshuffle verification
-    uint16_t *hostDecompressedQuantizationCode;
-    hostDecompressedQuantizationCode = (uint16_t *)malloc(sizeof(uint16_t) * dataTypeLen);
-    CHECK_CUDA(cudaMemcpy(hostDecompressedQuantizationCode, deviceDecompressedQuantizationCode, sizeof(uint16_t) * dataTypeLen, cudaMemcpyDeviceToHost));
-
-    cudaDeviceSynchronize();
-
-    printf("begin bitshuffle verification\n");
-    bool bitshuffleVerify = true;
-    for (int tmpIdx = 0; tmpIdx < dataTypeLen; tmpIdx++)
-    {
-        if (hostQuantizationCode[tmpIdx] != hostDecompressedQuantizationCode[tmpIdx])
-        {
-            printf("data type len: %u\n", dataTypeLen);
-            printf("verification failed at index: %d\noriginal quantization code: %u\ndecompressed quantization code: %u\n", tmpIdx, hostQuantizationCode[tmpIdx], hostDecompressedQuantizationCode[tmpIdx]);
-            bitshuffleVerify = false;
-            break;
-        }
-    }
-
-    free(hostQuantizationCode);
-    free(hostDecompressedQuantizationCode);
-
-    // pre-quantization verification
-    float *hostDecompressedOutput;
-    hostDecompressedOutput = (float *)malloc(sizeof(float) * dataTypeLen);
-    CHECK_CUDA(cudaMemcpy(hostDecompressedOutput, deviceDecompressedOutput, sizeof(float) * dataTypeLen, cudaMemcpyDeviceToHost));
-
-    cudaDeviceSynchronize();
-
-    bool prequantizationVerify = true;
-    if (bitshuffleVerify)
-    {
-        printf("begin pre-quantization verification\n");
-        for (int tmpIdx = 0; tmpIdx < dataTypeLen; tmpIdx++)
-        {
-            if (std::abs(hostInput[tmpIdx] - hostDecompressedOutput[tmpIdx]) > float(eb * 1.01))
-            {
-                printf("verification failed at index: %d\noriginal data: %f\ndecompressed data: %f\n", tmpIdx, hostInput[tmpIdx], hostDecompressedOutput[tmpIdx]);
-                printf("error is: %f, while error bound is: %f\n", std::abs(hostInput[tmpIdx] - hostDecompressedOutput[tmpIdx]), float(eb));
-                prequantizationVerify = false;
-                break;
-            }
-        }
-    }
-
-    free(hostDecompressedOutput);
-
-    // print verification result
-    if (bitshuffleVerify)
-    {
-        printf("bitshuffle verification succeed!\n");
-        if (prequantizationVerify)
-        {
-            printf("pre-quantization verification succeed!\n");
-        }
-        else
-        {
-            printf("pre-quantization verification fail\n");
-        }
-    }
-    else
-    {
-        printf("bitshuffle verification fail\n");
-    }
-
-#endif
-
     CHECK_CUDA(cudaMemcpy(&offsetSum, deviceOffsetCounter, sizeof(uint32_t), cudaMemcpyDeviceToHost));
     printf("original size: %d\n", inputSize);
     printf("compressed size: %ld\n", sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * int(quantizationCodeByteLen / 4096));
     printf("compression ratio: %f\n", float(inputSize) / float(sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
-    *outputSizePtr = sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * int(quantizationCodeByteLen / 4096) + 5;
+    *outputSizePtr = sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * int(quantizationCodeByteLen / 4096) + 5 * sizeof(int);
 
     std::chrono::duration<double> compressionTime = compressionEnd - compressionStart;
 
@@ -573,81 +497,6 @@ void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput)
     cudaDeviceSynchronize();
     decompressionEnd = std::chrono::system_clock::now();
 
-#ifdef VERIFICATION
-
-    uint16_t *hostQuantizationCode;
-    hostQuantizationCode = (uint16_t *)malloc(sizeof(uint16_t) * dataTypeLen);
-    CHECK_CUDA(cudaMemcpy(hostQuantizationCode, deviceQuantizationCode, sizeof(uint16_t) * dataTypeLen, cudaMemcpyDeviceToHost));
-
-    // bitshuffle verification
-    uint16_t *hostDecompressedQuantizationCode;
-    hostDecompressedQuantizationCode = (uint16_t *)malloc(sizeof(uint16_t) * dataTypeLen);
-    CHECK_CUDA(cudaMemcpy(hostDecompressedQuantizationCode, deviceDecompressedQuantizationCode, sizeof(uint16_t) * dataTypeLen, cudaMemcpyDeviceToHost));
-
-    cudaDeviceSynchronize();
-
-    printf("begin bitshuffle verification\n");
-    bool bitshuffleVerify = true;
-    for (int tmpIdx = 0; tmpIdx < dataTypeLen; tmpIdx++)
-    {
-        if (hostQuantizationCode[tmpIdx] != hostDecompressedQuantizationCode[tmpIdx])
-        {
-            printf("data type len: %u\n", dataTypeLen);
-            printf("verification failed at index: %d\noriginal quantization code: %u\ndecompressed quantization code: %u\n", tmpIdx, hostQuantizationCode[tmpIdx], hostDecompressedQuantizationCode[tmpIdx]);
-            bitshuffleVerify = false;
-            break;
-        }
-    }
-
-    free(hostQuantizationCode);
-    free(hostDecompressedQuantizationCode);
-
-    // pre-quantization verification
-    float *hostDecompressedOutput;
-    hostDecompressedOutput = (float *)malloc(sizeof(float) * dataTypeLen);
-    CHECK_CUDA(cudaMemcpy(hostDecompressedOutput, deviceDecompressedOutput,
-                          sizeof(float) * dataTypeLen, cudaMemcpyDeviceToHost));
-
-    cudaDeviceSynchronize();
-
-    bool prequantizationVerify = true;
-    if (bitshuffleVerify)
-    {
-        printf("begin pre-quantization verification\n");
-        for (int tmpIdx = 0; tmpIdx < dataTypeLen; tmpIdx++)
-        {
-            if (std::abs(hostInput[tmpIdx] - hostDecompressedOutput[tmpIdx]) > float(eb * 1.01))
-            {
-                printf("verification failed at index: %d\noriginal data: %f\ndecompressed data: %f\n", tmpIdx, hostInput[tmpIdx], hostDecompressedOutput[tmpIdx]);
-                printf("error is: %f, while error bound is: %f\n", std::abs(hostInput[tmpIdx] - hostDecompressedOutput[tmpIdx]), float(eb));
-                prequantizationVerify = false;
-                break;
-            }
-        }
-    }
-
-    free(hostDecompressedOutput);
-
-    // print verification result
-    if (bitshuffleVerify)
-    {
-        printf("bitshuffle verification succeed!\n");
-        if (prequantizationVerify)
-        {
-            printf("pre-quantization verification succeed!\n");
-        }
-        else
-        {
-            printf("pre-quantization verification fail\n");
-        }
-    }
-    else
-    {
-        printf("bitshuffle verification fail\n");
-    }
-
-#endif
-
     std::chrono::duration<double> decompressionTime = decompressionEnd - decompressionStart;
 
     std::cout << "decompression e2e time: " << decompressionTime.count() << " s\n";
@@ -664,57 +513,42 @@ void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput)
     return;
 }
 
-// List of Tensor(GPU),
-// list of device index(CPU),
-// list of input size(CPU),
-// world size(int CPU),
-// list of error bound(CPU),
-// list of dimensions (CPU),
-// output(GPU),
-// Compressed Size Tensor(GPU/CPU)
-
 extern "C"
 {
-    void pfzCompress(float **deviceInput,
+    void pfzCompress(float **deviceInputArr,
                      int gpuIndex,
-                     int *inputSizeArr,
-                     int arrSize,
+                     int deviceInputSize,
+                     int deviceInputArrSize,
                      int worldSize,
-                     float *errorBoundArr,
-                     int **dimensionInfoArr,
+                     float errorBound,
+                     int *dimensionInfoArr,
                      uint8_t *deviceCompressed,
                      int **compressedSizeArr)
     {
         CHECK_CUDA(cudaSetDevice(gpuIndex));
-        int chunkInputSizeArr[arrSize] = {0};
-        for (int i = 0; i < arrSize; i++)
-        {
-            // get the data chunk size for each input tensor, we add paddings to the originla data so that it can be divided by the world size
-            chunkInputSizeArr[i] = inputSizeArr[i] / worldSize == 0 ? inputSizeArr[i] / worldSize : inputSizeArr[i] / worldSize + 1;
-        }
+        int chunkSize = deviceInputSize / worldSize;
 
         int x, y, z;
-        float eb;
+        x = dimensionInfoArr[0];
+        y = dimensionInfoArr[1];
+        z = dimensionInfoArr[2];
+        float eb = errorBound;
         int outputSizeCounter = 0;
         int outputSize = 0;
-        for (int i = 0; i < arrSize; i++)
+
+        for (int i = 0; i < deviceInputArrSize; i++)
         {
             for (int j = 0; j < worldSize; j++)
             {
-                x = dimensionInfoArr[i][0];
-                y = dimensionInfoArr[i][1];
-                z = dimensionInfoArr[i][2];
-                eb = errorBoundArr[i];
-                int actualInputSize = j == (worldSize - 1) ? chunkInputSizeArr[i] - worldSize + inputSizeArr[i] % worldSize : chunkInputSizeArr[i];
+                int actualInputSize = j == (worldSize - 1) ? deviceInputSize - chunkSize * (worldSize - 1) : chunkSize;
 
-                fzCompress(deviceInput[i] + chunkInputSizeArr[i] * j,
+                fzCompress(deviceInputArr[i] + chunkSize * j,
                            deviceCompressed + outputSizeCounter,
                            &outputSize,
                            actualInputSize,
                            x, y, z, eb);
-
                 outputSizeCounter += outputSize;
-                compressedSizeArr[i][j] = outputSize;
+                // compressedSizeArr[i][j] = outputSize;
             }
         }
 

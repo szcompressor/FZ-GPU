@@ -5,32 +5,51 @@ from ctypes import *
 from random import random
 
 # create example tensors on GPU
-input_tensor_gpu = torch.tensor([random() for i in range(1024 * 1024)], dtype=torch.float32).cuda()
-compressed_tensor_gpu = torch.tensor([random() for i in range(1024 * 1024 * 4 * 8)], dtype = torch.uint8).cuda()
-output_tensor_gpu = torch.tensor([0 for i in range(1024 * 1024)], dtype=torch.float32).cuda()
+input_tensor_gpu0 = torch.tensor([1 for i in range(1024 * 1024)], dtype=torch.float32).cuda()
+input_tensor_gpu1 = torch.tensor([2 for i in range(1024 * 1024)], dtype=torch.float32).cuda()
+input_list = [cast(input_tensor_gpu0.data_ptr(), POINTER(c_float)), cast(input_tensor_gpu1.data_ptr(), POINTER(c_float))]
+input_list_c = (POINTER(c_float) * 2)(*input_list)
+input_list_prt = pointer(input_list_c)
 
-# compression and decompression round trip
-def pfz_round_trip():
-    dll = ctypes.CDLL('./fz-gpu.so', mode=ctypes.RTLD_GLOBAL)
-    func = dll.fzRoundTrip
-    func.argtypes = [POINTER(c_float), POINTER(c_ubyte), POINTER(c_float), c_int, c_int, c_int, c_int, c_double]
-    return func
+gpu_index = c_int(0)
 
-def run_pfz(input, compressed, output, x, y, z, error_bound):
-    # get input GPU pointer
-    input_gpu_ptr = input.data_ptr()
-    input_gpu_ptr = cast(input_gpu_ptr, ctypes.POINTER(c_float))
+input_size = c_int(1024 * 1024)
 
-    # get output GPU pointer
-    output_gpu_ptr = output.data_ptr()
-    output_gpu_ptr = cast(output_gpu_ptr, ctypes.POINTER(c_float))
+input_list_size = c_int(2)
 
-    # get compressed GPU pointer
-    compressed_gpu_ptr = compressed.data_ptr()
-    compressed_gpu_ptr = cast(compressed_gpu_ptr, ctypes.POINTER(c_ubyte))
+world_size = c_int(4)
 
-    __pfz = pfz_round_trip()
-    __pfz(input_gpu_ptr, compressed_gpu_ptr, output_gpu_ptr, c_int(x * y * z * 4), c_int(x), c_int(y), c_int(z), c_double(error_bound))
+error_bound = c_float(1)
 
-if __name__ == '__main__':
-    run_pfz(input_tensor_gpu, compressed_tensor_gpu, output_tensor_gpu, 1024, 1024, 1, 1e-3)
+dimension_info = (c_int*3)(*[1024, 256, 1])
+dimension_info_ptr = pointer(dimension_info)
+
+compressed_tensor_gpu = torch.tensor([3 for i in range(1024 * 1024 * 4 * 2)], dtype = torch.uint8).cuda()
+compressed_ptr = cast(compressed_tensor_gpu.data_ptr(), POINTER(c_uint8))
+
+compressed_size = [[0, 0, 0, 0], [0, 0, 0, 0]]
+# Create a 2D array
+compressed_size_c = ((c_int * 4) * 2)()
+# Assign values to the 2D array
+for i in range(2):
+    for j in range(4):
+        compressed_size_c[i][j] = compressed_size[i][j]
+compressed_size_ptr = pointer(compressed_size_c)
+
+# load so library to python
+pfz = ctypes.CDLL('./fz-gpu.so', mode=ctypes.RTLD_GLOBAL)
+
+# launch compression
+pfz.pfzCompress(input_list_prt,
+                gpu_index,
+                input_size,
+                input_list_size,
+                world_size,
+                error_bound,
+                dimension_info_ptr,
+                compressed_ptr,
+                compressed_size_ptr
+                )
+
+# launch decompression
+# pfz.pzfDecompress()
