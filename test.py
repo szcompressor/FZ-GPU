@@ -27,13 +27,7 @@ dimension_info_ptr = pointer(dimension_info)
 compressed_tensor_gpu = torch.tensor([3 for i in range(1024 * 1024 * 4 * 2)], dtype = torch.uint8).cuda()
 compressed_ptr = cast(compressed_tensor_gpu.data_ptr(), POINTER(c_uint8))
 
-compressed_size = [[0, 0, 0, 0], [0, 0, 0, 0]]
-# Create a 2D array
-compressed_size_c = ((c_int * 4) * 2)()
-# Assign values to the 2D array
-for i in range(2):
-    for j in range(4):
-        compressed_size_c[i][j] = compressed_size[i][j]
+compressed_size_c = (c_int * 8)()
 compressed_size_ptr = pointer(compressed_size_c)
 
 # load so library to python

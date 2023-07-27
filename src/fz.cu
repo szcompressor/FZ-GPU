@@ -523,7 +523,7 @@ extern "C"
                      float errorBound,
                      int *dimensionInfoArr,
                      uint8_t *deviceCompressed,
-                     int **compressedSizeArr)
+                     int *compressedSizeArr)
     {
         CHECK_CUDA(cudaSetDevice(gpuIndex));
         int chunkSize = deviceInputSize / worldSize;
@@ -536,9 +536,9 @@ extern "C"
         int outputSizeCounter = 0;
         int outputSize = 0;
 
-        for (int i = 0; i < deviceInputArrSize; i++)
+        for (int j = 0; j < worldSize; j++)
         {
-            for (int j = 0; j < worldSize; j++)
+            for (int i = 0; i < deviceInputArrSize; i++)
             {
                 int actualInputSize = j == (worldSize - 1) ? deviceInputSize - chunkSize * (worldSize - 1) : chunkSize;
 
@@ -548,7 +548,7 @@ extern "C"
                            actualInputSize,
                            x, y, z, eb);
                 outputSizeCounter += outputSize;
-                // compressedSizeArr[i][j] = outputSize;
+                compressedSizeArr[j * deviceInputArrSize + i] = outputSize;
             }
         }
 
