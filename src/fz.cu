@@ -15,6 +15,17 @@
 #define UINT32_BIT_LEN 32
 // #define VERIFICATION
 // #define DEBUG
+__global__ void printFirst(float *dev_a)
+{
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+        printf("float First element: %f\n", dev_a[0]);
+}
+
+__global__ void printFirst_uint8(uint8_t *dev_a)
+{
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+        printf("uint8 First element: %d\n", dev_a[0]);
+}
 
 long GetFileSize(std::string fidataTypeLename)
 {
@@ -70,7 +81,7 @@ __global__ void compressionFusedKernel(
 
 #ifdef DEBUG
     dataChunk[threadIdx.y][threadIdx.x] = v;
-    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 0)
     {
         printf("original data:\n");
         for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
@@ -89,7 +100,7 @@ __global__ void compressionFusedKernel(
     __syncthreads();
 
 #ifdef DEBUG
-    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 0)
     {
         printf("shuffled data:\n");
         for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
@@ -122,7 +133,7 @@ __global__ void compressionFusedKernel(
     __syncthreads();
 
 #ifdef DEBUG
-    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 0)
     {
         printf("bit flag array: %u\n", bitflagArr[0]);
     }
@@ -160,7 +171,7 @@ __global__ void compressionFusedKernel(
     }
     __syncthreads();
 
-    // prefix summation, down-sweep
+// prefix summation, down-sweep
 #pragma unroll 8
     for (int d = 1; d < 256; d *= 2)
     {
@@ -178,7 +189,7 @@ __global__ void compressionFusedKernel(
     }
 
 #ifdef DEBUG
-    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 0)
     {
         printf("byte flag array:\n");
         for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
@@ -237,7 +248,7 @@ __global__ void decompressionFusedKernel(
     int prefixSumOffset = 1;
     int blockSize = 256;
 
-    // prefix summation, up-sweep
+// prefix summation, up-sweep
 #pragma unroll 8
     for (int d = 256 >> 1; d > 0; d = d >> 1)
     {
@@ -259,7 +270,7 @@ __global__ void decompressionFusedKernel(
     }
     __syncthreads();
 
-    // prefix summation, down-sweep
+// prefix summation, down-sweep
 #pragma unroll 8
     for (int d = 1; d < 256; d *= 2)
     {
@@ -277,7 +288,7 @@ __global__ void decompressionFusedKernel(
     }
 
 #ifdef DEBUG
-    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 0)
     {
         printf("decompressed byte flag array:\n");
         for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
@@ -311,7 +322,7 @@ __global__ void decompressionFusedKernel(
     uint32_t buffer = dataChunk[threadIdx.y][threadIdx.x];
     __syncthreads();
 
-    // bitshuffle (reverse)
+// bitshuffle (reverse)
 #pragma unroll 32
     for (int i = 0; i < 32; i++)
     {
@@ -320,7 +331,7 @@ __global__ void decompressionFusedKernel(
     __syncthreads();
 
 #ifdef DEBUG
-    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 1)
+    if (threadIdx.y == 0 && threadIdx.x == 0 && blockIdx.x == 0)
     {
         printf("decomopressed data:\n");
         for (int tmpIdx = 0; tmpIdx < 32; tmpIdx++)
@@ -335,8 +346,15 @@ __global__ void decompressionFusedKernel(
     deviceOutput[tid + bid * blockDim.x * blockDim.y] = dataChunk[threadIdx.y][threadIdx.x];
 }
 
-void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePtr, int inputSize, int x, int y, int z, float eb)
+void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePtr, int inputSize,
+                int x, int y, int z, float eb, uint16_t *quantizationCode)
 {
+    printFirst<<<1, 1>>>(deviceInput);
+    printFirst_uint8<<<1, 1>>>(deviceCompressed);
+    std::cout << "input size" << inputSize << std::endl
+              << "x" << x << std::endl
+              << "y" << y << std::endl
+              << "z" << z << std::endl;
     // defination of some basic variables
     auto inputDimension = dim3(x, y, z);
     auto dataTypeLen = inputSize;
@@ -351,7 +369,7 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePt
     deviceCompressedStartPosition = deviceCompressed + sizeof(int) * 5;
 
     bool *deviceSignNum;
-    uint16_t *deviceQuantizationCode;
+    uint16_t *deviceQuantizationCode = quantizationCode;
     uint32_t *deviceOffsetCounter;
     uint32_t *deviceCompressedSize;
 
@@ -369,6 +387,7 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePt
     dim3 grid(floor(paddingDataTypeLen / 2048)); // divided by 2 is because the file is transformed from uint32 to uint16
 
     CHECK_CUDA(cudaMalloc((void **)&deviceQuantizationCode, sizeof(uint16_t) * paddingDataTypeLen));
+    CHECK_CUDA(cudaMemset(deviceQuantizationCode, 0, sizeof(uint16_t) * paddingDataTypeLen));
     CHECK_CUDA(cudaMalloc((void **)&deviceSignNum, sizeof(bool) * paddingDataTypeLen));
 
     CHECK_CUDA(cudaMalloc((void **)&deviceOffsetCounter, sizeof(uint32_t)));
@@ -401,11 +420,17 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePt
     compressionFusedKernel<<<grid, block>>>((uint32_t *)deviceQuantizationCode, (uint32_t *)deviceCompressedOutput, deviceOffsetCounter, deviceBitFlagArr, deviceStartPosition, deviceCompressedSize);
 
     cudaDeviceSynchronize();
+    printFirst<<<1, 1>>>(deviceInput);
+    printFirst_uint8<<<1, 1>>>(deviceCompressed);
     compressionEnd = std::chrono::system_clock::now();
 
     CHECK_CUDA(cudaMemcpy(&offsetSum, deviceOffsetCounter, sizeof(uint32_t), cudaMemcpyDeviceToHost));
-    printf("original size: %d\n", inputSize);
+    printf("original size: %d\n", sizeof(float) * inputSize);
     printf("compressed size: %ld\n", sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * int(quantizationCodeByteLen / 4096));
+    printf("test1: %ld\n", sizeof(uint32_t) * bitFlagArrSize);
+    printf("test2: %ld\n", offsetSum * sizeof(uint32_t));
+    printf("test3: %ld\n", sizeof(uint32_t) * int(quantizationCodeByteLen / 4096));
+
     printf("compression ratio: %f\n", float(inputSize * sizeof(float)) / float(sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * floor(quantizationCodeByteLen / 4096)));
     *outputSizePtr = sizeof(uint32_t) * bitFlagArrSize + offsetSum * sizeof(uint32_t) + sizeof(uint32_t) * int(quantizationCodeByteLen / 4096) + 5 * sizeof(int);
 
@@ -414,7 +439,7 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePt
     std::cout << "compression e2e time: " << compressionTime.count() << " s\n";
     std::cout << "compression e2e throughput: " << float(inputSize * sizeof(float)) / 1024 / 1024 / 1024 / compressionTime.count() << " GB/s\n";
 
-    CHECK_CUDA(cudaFree(deviceQuantizationCode));
+    // CHECK_CUDA(cudaFree(deviceQuantizationCode));
     CHECK_CUDA(cudaFree(deviceSignNum));
 
     CHECK_CUDA(cudaFree(deviceOffsetCounter));
@@ -520,7 +545,6 @@ extern "C"
     {
         CHECK_CUDA(cudaSetDevice(gpuIndex));
         int chunkSize = deviceInputSize / worldSize;
-
         int x, y, z;
         x = dimensionInfoArr[0];
         y = dimensionInfoArr[1];
@@ -528,20 +552,85 @@ extern "C"
         float eb = errorBound;
         int outputSizeCounter = 0;
         int outputSize = 0;
+        uint16_t **quantizationCodeArr;
+        quantizationCodeArr = (uint16_t **)malloc(sizeof(uint16_t *) * 4);
 
         for (int j = 0; j < worldSize; j++)
         {
             for (int i = 0; i < deviceInputArrSize; i++)
             {
                 int actualInputSize = j == (worldSize - 1) ? deviceInputSize - chunkSize * (worldSize - 1) : chunkSize;
-
+                std::cout << "actualInputSize: " << actualInputSize << std::endl;
                 fzCompress(deviceInputArr[i] + chunkSize * j,
                            deviceCompressed + outputSizeCounter,
                            &outputSize,
                            actualInputSize,
-                           x, y, z, eb);
+                           x, y, z, eb,
+                           quantizationCodeArr[j * 2 + i]);
                 outputSizeCounter += outputSize;
                 compressedSizeArr[j * deviceInputArrSize + i] = outputSize;
+            }
+        }
+        uint16_t **hostQuantizationCodeArr;
+        hostQuantizationCodeArr = (uint16_t **)malloc(sizeof(uint16_t *) * 8);
+        for (int tmpIdx = 0; tmpIdx < 8; tmpIdx++)
+        {
+            hostQuantizationCodeArr[tmpIdx] = (uint16_t *)malloc(sizeof(uint16_t) * chunkSize);
+            cudaMemcpy(hostQuantizationCodeArr[tmpIdx],
+                       quantizationCodeArr[tmpIdx],
+                       sizeof(uint16_t) * chunkSize,
+                       cudaMemcpyDeviceToHost);
+        }
+
+        for (int tmpIdx = 0; tmpIdx < chunkSize; tmpIdx++)
+        {
+            bool res = false;
+            res = (hostQuantizationCodeArr[0][tmpIdx] == hostQuantizationCodeArr[1][tmpIdx]) && (hostQuantizationCodeArr[0][tmpIdx] == hostQuantizationCodeArr[2][tmpIdx]) && (hostQuantizationCodeArr[0][tmpIdx] == hostQuantizationCodeArr[3][tmpIdx]) && (hostQuantizationCodeArr[0][tmpIdx] == hostQuantizationCodeArr[4][tmpIdx]) && (hostQuantizationCodeArr[0][tmpIdx] == hostQuantizationCodeArr[5][tmpIdx]) && (hostQuantizationCodeArr[0][tmpIdx] == hostQuantizationCodeArr[6][tmpIdx]) && (hostQuantizationCodeArr[0][tmpIdx] == hostQuantizationCodeArr[7][tmpIdx]);
+            if (!res)
+            {
+                std::cout << "quantization code validation failed !!!!!" << std::endl
+                          << "0: " << hostQuantizationCodeArr[0][tmpIdx] << std::endl
+                          << "1: " << hostQuantizationCodeArr[1][tmpIdx] << std::endl
+                          << "2: " << hostQuantizationCodeArr[2][tmpIdx] << std::endl
+                          << "3: " << hostQuantizationCodeArr[3][tmpIdx] << std::endl
+                          << "4: " << hostQuantizationCodeArr[4][tmpIdx] << std::endl
+                          << "5: " << hostQuantizationCodeArr[5][tmpIdx] << std::endl
+                          << "6: " << hostQuantizationCodeArr[6][tmpIdx] << std::endl
+                          << "7: " << hostQuantizationCodeArr[7][tmpIdx] << std::endl
+                          << "with index " << tmpIdx << std::endl
+                          << "tmp index " << tmpIdx << std::endl;
+                break;
+            }
+        }
+
+        // validate input values
+        float **hostInputArr;
+        hostInputArr = (float **)malloc(sizeof(float *) * 8);
+        for (int tmpIdx = 0; tmpIdx < 8; tmpIdx++)
+        {
+            hostInputArr[tmpIdx] = (float *)malloc(sizeof(float) * chunkSize);
+            cudaMemcpy(hostInputArr[tmpIdx],
+                       deviceInputArr[tmpIdx / 4] + (chunkSize * tmpIdx % 4),
+                       sizeof(float) * chunkSize,
+                       cudaMemcpyDeviceToHost);
+        }
+        for (int tmpIdx = 0; tmpIdx < chunkSize; tmpIdx++)
+        {
+            bool res = false;
+            res = (hostInputArr[0][tmpIdx] == hostInputArr[1][tmpIdx]) && (hostInputArr[0][tmpIdx] == hostInputArr[2][tmpIdx]) && (hostInputArr[0][tmpIdx] == hostInputArr[3][tmpIdx]) && (hostInputArr[0][tmpIdx] == hostInputArr[4][tmpIdx]) && (hostInputArr[0][tmpIdx] == hostInputArr[5][tmpIdx]) && (hostInputArr[0][tmpIdx] == hostInputArr[6][tmpIdx]) && (hostInputArr[0][tmpIdx] == hostInputArr[7][tmpIdx]);
+            if (!res)
+            {
+                std::cout << "input validation failed !!!!!" << std::endl
+                          << "0: " << hostInputArr[0][tmpIdx] << std::endl
+                          << "1: " << hostInputArr[1][tmpIdx] << std::endl
+                          << "2: " << hostInputArr[2][tmpIdx] << std::endl
+                          << "3: " << hostInputArr[3][tmpIdx] << std::endl
+                          << "4: " << hostInputArr[4][tmpIdx] << std::endl
+                          << "5: " << hostInputArr[5][tmpIdx] << std::endl
+                          << "6: " << hostInputArr[6][tmpIdx] << std::endl
+                          << "7: " << hostInputArr[7][tmpIdx] << std::endl
+                          << "with index " << tmpIdx << std::endl;
+                break;
             }
         }
 

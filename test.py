@@ -10,7 +10,7 @@ pfz = ctypes.CDLL('./fz-gpu.so', mode=ctypes.RTLD_GLOBAL)
 
 # create tensors and pointers for compression
 input_tensor_gpu0 = torch.tensor([1 for i in range(1024 * 1024)], dtype=torch.float32).cuda()
-input_tensor_gpu1 = torch.tensor([2 for i in range(1024 * 1024)], dtype=torch.float32).cuda()
+input_tensor_gpu1 = torch.tensor([1 for i in range(1024 * 1024)], dtype=torch.float32).cuda()
 input_list = [cast(input_tensor_gpu0.data_ptr(), POINTER(c_float)), cast(input_tensor_gpu1.data_ptr(), POINTER(c_float))]
 input_list_c = (POINTER(c_float) * 2)(*input_list)
 input_list_prt = pointer(input_list_c)
