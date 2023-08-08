@@ -27,6 +27,13 @@ __global__ void printFirst_uint8(uint8_t *dev_a)
         printf("uint8 First element: %d\n", dev_a[0]);
 }
 
+__global__ void validateData(float *dev_a)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if(dev_a[tid] != 1.0f)
+        printf("Error: %f\n", dev_a[tid]);
+}
+
 long GetFileSize(std::string fidataTypeLename)
 {
     struct stat stat_buf;
@@ -349,8 +356,7 @@ __global__ void decompressionFusedKernel(
 void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePtr, int inputSize,
                 int x, int y, int z, float eb, uint16_t *quantizationCode)
 {
-    printFirst<<<1, 1>>>(deviceInput);
-    printFirst_uint8<<<1, 1>>>(deviceCompressed);
+    validateData<<<inputSize, 1>>>(deviceInput);
     std::cout << "input size" << inputSize << std::endl
               << "x" << x << std::endl
               << "y" << y << std::endl

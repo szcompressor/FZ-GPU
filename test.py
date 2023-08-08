@@ -25,7 +25,7 @@ world_size = c_int(4)
 
 error_bound = c_float(0.1)
 
-dimension_info = (c_int*3)(*[1024, 256, 1])
+dimension_info = (c_int*3)(*[1024 * 256, 1, 1])
 dimension_info_ptr = pointer(dimension_info)
 
 compressed_tensor_gpu = torch.tensor([3 for i in range(1024 * 1024 * 4 * 2)], dtype = torch.uint8).cuda()
