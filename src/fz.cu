@@ -30,7 +30,7 @@ __global__ void printFirst_uint8(uint8_t *dev_a)
 __global__ void validateData(float *dev_a)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if(dev_a[tid] != 1.0f)
+    if (dev_a[tid] != 1.0f)
         printf("Error: %f\n", dev_a[tid]);
 }
 
@@ -537,6 +537,63 @@ void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput)
     return;
 }
 
+void testQuantization(float *deviceInput,
+                      //   uint16_t *deviceQuantizationCode,
+                      int inputSize,
+                      float errorBound,
+                      int x,
+                      int y,
+                      int z,
+                      int index)
+{
+    auto inputDimension = dim3(x, y, z);
+    auto dataTypeLen = inputSize;
+
+    float timeElapsed;
+
+    bool *deviceSignNum;
+
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
+    uint16_t *deviceQuantizationCode;
+
+    CHECK_CUDA(cudaMalloc((void **)&deviceSignNum, sizeof(bool) * dataTypeLen));
+    CHECK_CUDA(cudaMalloc((void **)&deviceQuantizationCode, sizeof(uint16_t) * dataTypeLen));
+
+    // pre-quantization
+    cusz::experimental::launch_construct_LorenzoI_var<float, uint16_t, float>(deviceInput, deviceQuantizationCode, deviceSignNum, inputDimension, errorBound, timeElapsed, stream);
+
+    cudaDeviceSynchronize();
+
+    uint16_t *hostQuantizationCode = (uint16_t *)malloc(sizeof(uint16_t) * dataTypeLen);
+    CHECK_CUDA(cudaMemcpy(hostQuantizationCode, deviceQuantizationCode, sizeof(uint16_t) * dataTypeLen, cudaMemcpyDeviceToHost));
+    write_array_to_binary<uint16_t>("test" + std::to_string(index) + ".bin", hostQuantizationCode, dataTypeLen);
+
+    CHECK_CUDA(cudaFree(deviceSignNum));
+    CHECK_CUDA(cudaFree(deviceQuantizationCode));
+    free(hostQuantizationCode);
+
+    cudaStreamDestroy(stream);
+
+    return;
+}
+
+void multiTestQuantization(float *deviceInput,
+                           //   uint16_t *deviceQuantizationCode,
+                           int inputSize,
+                           float errorBound,
+                           int x,
+                           int y,
+                           int z,
+                           int times)
+{
+    for (int tmpIdx = 0; tmpIdx < times; tmpIdx++)
+    {
+        testQuantization(deviceInput, inputSize, errorBound, x, y, z, tmpIdx);
+    }
+}
+
 extern "C"
 {
     void pfzCompress(float **deviceInputArr,
@@ -656,6 +713,25 @@ extern "C"
                          deviceDecompressedOutput[i]);
         }
 
+        return;
+    }
+    void pyTestQuantization(float *deviceInput,
+                            // uint16_t *deviceQuantizationCode,
+                            int inputSize,
+                            float errorBound,
+                            int x,
+                            int y,
+                            int z,
+                            int times)
+    {
+        multiTestQuantization(deviceInput,
+                              //  deviceQuantizationCode,
+                              inputSize,
+                              errorBound,
+                              x,
+                              y,
+                              z,
+                              times);
         return;
     }
 }
