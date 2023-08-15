@@ -8,6 +8,9 @@
 #include <stdint.h>
 #include <sys/stat.h>
 #include <thrust/copy.h>
+#include <thrust/reduce.h>
+#include <thrust/functional.h>
+#include <thrust/transform_reduce.h>
 
 #include "../include/kernel/lorenzo_var.cuh"
 #include "../include/utils/cuda_err.cuh"
@@ -46,6 +49,15 @@ void write_array_to_binary(const std::string &fname, T *const _a, size_t const d
         return;
     ofs.write(reinterpret_cast<const char *>(_a), std::streamsize(dtype_dataTypeLen * sizeof(T)));
     ofs.close();
+}
+
+__global__ void popcount_kernel(uint32_t *input, int *output, size_t n)
+{
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < n)
+    {
+        output[index] = __popc(input[index]);
+    }
 }
 
 __global__ void compressionFusedKernel(
@@ -562,5 +574,55 @@ extern "C"
         }
 
         return;
+    }
+
+    void pfzSingleCompress(float *deviceInput, uint8_t *deviceCompressed, int inputSize, int x, int y, int z, float eb, int chunkNum)
+    {
+        int outputSize = 0;
+        fzCompress(deviceInput, deviceCompressed, &outputSize, inputSize, x, y, z, eb);
+
+        int chunkSize = inputSize / chunkNum;
+        int chunkQuantizationCodeByteSize = chunkSize * 2;
+        int flagArrSize = chunkQuantizationCodeByteSize % 512 == 0 ? chunkSize / 512 : chunkSize / 512 + 1;
+
+        int offsetCounter = 0;
+        int *compressedSizeArr = (int *)malloc(sizeof(int) * chunkNum);
+
+        int *devicePopCntArr;
+        CHECK_CUDA(cudaMalloc((void **)&devicePopCntArr, sizeof(int) * flagArrSize * chunkNum));
+
+        std::chrono::time_point<std::chrono::system_clock> calIdxStart, calIdxEnd;
+        calIdxStart = std::chrono::system_clock::now();
+        for (int tmpIdx = 0; tmpIdx < chunkNum; tmpIdx++)
+        {
+            int blocks = (flagArrSize + 32 - 1) / 32;
+            popcount_kernel<<<blocks, 32>>>((uint32_t *)(deviceCompressed + sizeof(int) * 5), devicePopCntArr + offsetCounter, flagArrSize);
+            
+            compressedSizeArr[tmpIdx] = thrust::reduce(thrust::device,
+                                                       devicePopCntArr + offsetCounter,
+                                                       devicePopCntArr + offsetCounter + flagArrSize,
+                                                       0);
+            offsetCounter += flagArrSize;
+        }
+        calIdxEnd = std::chrono::system_clock::now();
+        std::chrono::duration<double> calIdxTime = calIdxEnd - calIdxStart;
+        std::cout << "calIdxTime: " << calIdxTime.count() << " s\n";
+
+        free(compressedSizeArr);
+        CHECK_CUDA(cudaFree(devicePopCntArr));
+        return;
+    }
+
+    void pfzMultiCompress(float *deviceInput, uint8_t *deviceCompressed, int inputSize, int x, int y, int z, float eb, int chunkNum)
+    {
+        int outputSize = 0;
+        int chunkSize = inputSize / chunkNum;
+        int offsetCounter = 0;
+
+        for (int tmpIdx = 0; tmpIdx < chunkNum; tmpIdx++)
+        {
+            fzCompress(deviceInput + chunkSize * tmpIdx, deviceCompressed + offsetCounter, &outputSize, inputSize / chunkNum, x, y, z, eb);
+            offsetCounter += outputSize;
+        }
     }
 }
