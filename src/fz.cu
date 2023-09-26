@@ -18,6 +18,7 @@
 #define UINT32_BIT_LEN 32
 // #define VERIFICATION
 // #define DEBUG
+// #define PREDICTION_SWITCH
 
 long GetFileSize(std::string fidataTypeLename)
 {
@@ -347,6 +348,35 @@ __global__ void decompressionFusedKernel(
     deviceOutput[tid + bid * blockDim.x * blockDim.y] = dataChunk[threadIdx.y][threadIdx.x];
 }
 
+__global__ void quantizeKernel(float *input, int16_t *output, float eb2Inverse, int size)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size)
+    {
+        output[idx] = static_cast<int16_t>(roundf(input[idx] * eb2Inverse));
+    }
+}
+
+__global__ void dequantizeKernel(int16_t *input, float *output, float eb, int size)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size)
+    {
+        output[idx] = static_cast<float>(input[idx]) * 2 * eb;
+    }
+}
+
+void launchQuantization(float *input, int16_t *output, float eb, int size)
+{
+    float eb2inverse = 1 / (2 * eb);
+    quantizeKernel<<<(size + 256 - 1 / 256), 256>>>(input, output, eb2inverse, size);
+}
+
+void launchDequantization(int16_t *input, float *output, float eb, int size)
+{
+    dequantizeKernel<<<(size + 256 - 1 / 256), 256>>>(input, output, eb, size);
+}
+
 void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePtr, int inputSize, int x, int y, int z, float eb)
 {
     // defination of some basic variables
@@ -363,7 +393,13 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePt
     deviceCompressedStartPosition = deviceCompressed + sizeof(int) * 5;
 
     bool *deviceSignNum;
+
+#ifdef PREDICTION_SWITCH
     uint16_t *deviceQuantizationCode;
+#else
+    int16_t *deviceQuantizationCode;
+#endif
+
     uint32_t *deviceOffsetCounter;
     uint32_t *deviceCompressedSize;
 
@@ -406,8 +442,12 @@ void fzCompress(float *deviceInput, uint8_t *deviceCompressed, int *outputSizePt
 
     compressionStart = std::chrono::system_clock::now();
 
+#ifdef PREDICTION_SWITCH
     // pre-quantization
     cusz::experimental::launch_construct_LorenzoI_var<float, uint16_t, float>(deviceInput, deviceQuantizationCode, deviceSignNum, inputDimension, eb, timeElapsed, stream);
+#else
+    launchQuantization(deviceInput, deviceQuantizationCode, eb, dataTypeLen);
+#endif
 
     // bitshuffle kernel
     compressionFusedKernel<<<grid, block>>>((uint32_t *)deviceQuantizationCode, (uint32_t *)deviceCompressedOutput, deviceOffsetCounter, deviceBitFlagArr, deviceStartPosition, deviceCompressedSize);
@@ -461,7 +501,11 @@ void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput)
 
     float timeElapsed;
 
+#ifdef PREDICTION_SWITCH
     uint16_t *deviceDecompressedQuantizationCode;
+#else
+    int16_t *deviceDecompressedQuantizationCode;
+#endif
 
     uint16_t *deviceCompressedOutput;
     uint32_t *deviceBitFlagArr;
@@ -499,8 +543,12 @@ void fzDecompress(uint8_t *deviceCompressed, float *deviceDecompressedOutput)
     // de-bitshuffle kernel
     decompressionFusedKernel<<<grid, block>>>((uint32_t *)deviceCompressedOutput, (uint32_t *)deviceDecompressedQuantizationCode, deviceBitFlagArr, deviceStartPosition);
 
+#ifdef PREDICTION_SWITCH
     // de-pre-quantization
     cusz::experimental::launch_reconstruct_LorenzoI_var<float, uint16_t, float>(deviceSignNum, deviceDecompressedQuantizationCode, deviceDecompressedOutput, inputDimension, eb, timeElapsed, stream);
+#else
+    launchDequantization(deviceDecompressedQuantizationCode, deviceDecompressedOutput, eb, dataTypeLen);
+#endif
 
     cudaDeviceSynchronize();
     decompressionEnd = std::chrono::system_clock::now();
@@ -597,7 +645,7 @@ extern "C"
         {
             int blocks = (flagArrSize + 32 - 1) / 32;
             popcount_kernel<<<blocks, 32>>>((uint32_t *)(deviceCompressed + sizeof(int) * 5), devicePopCntArr + offsetCounter, flagArrSize);
-            
+
             compressedSizeArr[tmpIdx] = thrust::reduce(thrust::device,
                                                        devicePopCntArr + offsetCounter,
                                                        devicePopCntArr + offsetCounter + flagArrSize,
